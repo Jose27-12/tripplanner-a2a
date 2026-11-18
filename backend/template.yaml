@@ -1,0 +1,394 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: TripPlanner AI — Backend serverless (Cognito + API Gateway + DynamoDB + Lambdas)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parámetros
+# ─────────────────────────────────────────────────────────────────────────────
+Parameters:
+  Stage:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Etapa de despliegue
+
+  FrontendOrigin:
+    Type: String
+    Default: "*"
+    Description: >
+      Dominio del frontend para CORS (ej. https://d1234.cloudfront.net).
+      Usa * solo en desarrollo.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Globals — valores por defecto para todas las Lambdas
+# ─────────────────────────────────────────────────────────────────────────────
+Globals:
+  Function:
+    Runtime: python3.10
+    Handler: index.handler
+    Timeout: 15
+    MemorySize: 256
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref TripPlannerTable
+        FRONTEND_ORIGIN: !Ref FrontendOrigin
+        POWERTOOLS_SERVICE_NAME: tripplanner
+    Layers:
+      - !Ref CommonLayer
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recursos
+# ─────────────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ── Cognito ───────────────────────────────────────────────────────────────
+
+  TripPlannerUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub TripPlannerUserPool-${Stage}
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+      UserPoolAddOns:
+        AdvancedSecurityMode: OFF
+      DeletionProtection: INACTIVE
+
+  TripPlannerUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub TripPlannerWebClient-${Stage}
+      UserPoolId: !Ref TripPlannerUserPool
+      GenerateSecret: false          # SRP flow — sin secret para SPA
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1         # horas
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30       # días
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  # ── DynamoDB ──────────────────────────────────────────────────────────────
+
+  TripPlannerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub TripPlannerTable-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # ── Capa común ────────────────────────────────────────────────────────────
+
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub TripPlannerCommon-${Stage}
+      Description: Helpers compartidos (dynamo, auth, respuestas HTTP)
+      ContentUri: common/
+      CompatibleRuntimes: [python3.10]
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: python3.10
+
+  # ── API Gateway ───────────────────────────────────────────────────────────
+
+  TripPlannerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub TripPlannerApi-${Stage}
+      StageName: !Ref Stage
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: !Sub "'${FrontendOrigin}'"
+      Auth:
+        DefaultAuthorizer: CognitoAuth
+        Authorizers:
+          CognitoAuth:
+            UserPoolArn: !GetAtt TripPlannerUserPool.Arn
+            Identity:
+              Header: Authorization
+      TracingEnabled: true
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: 100
+          ThrottlingBurstLimit: 200
+
+  # ── IAM — política base para DynamoDB ─────────────────────────────────────
+
+  LambdaDynamoBasePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub TripPlannerLambdaDynamoBase-${Stage}
+      Description: Acceso mínimo a TripPlannerTable para las Lambdas
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt TripPlannerTable.Arn
+              - !Sub "${TripPlannerTable.Arn}/index/GSI1"
+
+  # ── Lambdas ───────────────────────────────────────────────────────────────
+
+  # Viajes
+  GetTripsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-GetTrips-${Stage}
+      CodeUri: functions/get_trips/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /trips
+            Method: GET
+
+  CreateTripFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-CreateTrip-${Stage}
+      CodeUri: functions/create_trip/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /trips
+            Method: POST
+
+  GetTripFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-GetTrip-${Stage}
+      CodeUri: functions/get_trip/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /trips/{id}
+            Method: GET
+
+  UpdateTripFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-UpdateTrip-${Stage}
+      CodeUri: functions/update_trip/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /trips/{id}
+            Method: PUT
+
+  # Itinerario
+  GetItineraryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-GetItinerary-${Stage}
+      CodeUri: functions/get_itinerary/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /trips/{id}/itinerary
+            Method: GET
+
+  CreateItineraryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-CreateItinerary-${Stage}
+      CodeUri: functions/create_itinerary/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /trips/{id}/itinerary
+            Method: POST
+
+  UpdateItineraryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-UpdateItinerary-${Stage}
+      CodeUri: functions/update_itinerary/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /trips/{id}/itinerary
+            Method: PUT
+
+  # Reservas
+  GetReservationsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-GetReservations-${Stage}
+      CodeUri: functions/get_reservations/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /reservations
+            Method: GET
+
+  CreateReservationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-CreateReservation-${Stage}
+      CodeUri: functions/create_reservation/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /reservations
+            Method: POST
+
+  UpdateReservationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-UpdateReservation-${Stage}
+      CodeUri: functions/update_reservation/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /reservations/{id}
+            Method: PUT
+
+  # Preferencias
+  GetPreferencesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-GetPreferences-${Stage}
+      CodeUri: functions/get_preferences/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /preferences
+            Method: GET
+
+  UpdatePreferencesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub TripPlanner-UpdatePreferences-${Stage}
+      CodeUri: functions/update_preferences/
+      Policies:
+        - !Ref LambdaDynamoBasePolicy
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TripPlannerApi
+            Path: /preferences
+            Method: PUT
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs — valores necesarios para el frontend y los agentes
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+  ApiUrl:
+    Description: URL base de la API REST
+    Value: !Sub "https://${TripPlannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+    Export:
+      Name: !Sub TripPlannerApiUrl-${Stage}
+
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref TripPlannerUserPool
+    Export:
+      Name: !Sub TripPlannerUserPoolId-${Stage}
+
+  UserPoolClientId:
+    Description: Cognito App Client ID (para el frontend)
+    Value: !Ref TripPlannerUserPoolClient
+    Export:
+      Name: !Sub TripPlannerUserPoolClientId-${Stage}
+
+  TableName:
+    Description: Nombre de la tabla DynamoDB
+    Value: !Ref TripPlannerTable
+    Export:
+      Name: !Sub TripPlannerTableName-${Stage}

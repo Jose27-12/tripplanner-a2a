@@ -1,86 +1,359 @@
+import json
 import os
-from typing import Any
 from collections import OrderedDict
-from strands import Agent, tool
-from strands.agent.a2a_agent import A2AAgent
-from strands.agent.conversation_manager.null_conversation_manager import NullConversationManager
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
-from bedrock_agentcore.memory.integrations.strands.config  import (
+from typing import Any
+
+import boto3
+from bedrock_agentcore.memory.integrations.strands.config import (
     AgentCoreMemoryConfig,
     RetrievalConfig,
 )
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
-from model.load import load_model
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from strands import Agent, tool
+from strands.agent.a2a_agent import A2AAgent
+from strands.agent.conversation_manager.null_conversation_manager import (
+    NullConversationManager,
+)
+
+from lambda_tools.client import invoke_lambda
 from mcp_client.client import get_streamable_http_mcp_client
+from model.load import load_model
 
 app = BedrockAgentCoreApp()
 log = app.logger
 
-# Define a Streamable HTTP MCP Client
-mcp_clients = [get_streamable_http_mcp_client()]
-
-DEFAULT_SYSTEM_PROMPT = """
-Eres un planificador de viajes. Usa ask_flights para buscar vuelos y
-ask_weather para consultar el clima. Consolida ambos resultados en una
-respuesta clara para el usuario.
-
-Si en el contexto del usuario (etiqueta <user_context>) aparece una preferencia
-de aerolínea, menciónala explícitamente al proponer vuelos y prioriza las
-opciones de esa aerolínea. Tampoco ignores otras preferencias que aparezcan
-(horario, asiento). No inventes preferencias que no estén en ese contexto.
-"""
-
-
-# Endpoints de los especialistas A2A (se completan después de desplegarlos)
+# ── Configuración de entorno ──────────────────────────────────────────────────
 FLIGHTS_URL = os.environ.get("FLIGHTS_AGENT_URL", "")
 WEATHER_URL = os.environ.get("WEATHER_AGENT_URL", "")
+MEMORY_ID   = os.environ.get("TRIP_MEMORY_ID") or None
+AWS_REGION  = os.environ.get("AWS_REGION", "us-east-1")
 
-# Vacío -> el agente sigue funcionando sin memoria gestionada.
-MEMORY_ID = os.environ.get("TRIP_MEMORY_ID") or None
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+# ── MCP client (Exa AI web search) ───────────────────────────────────────────
+mcp_clients = [get_streamable_http_mcp_client()]
 
-# Define a collection of tools used by the model
-tools = []
+# ── System prompt ─────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """
+Eres TripPlanner AI, un asistente experto en planificación de viajes.
 
-# Delega en el Flights Agent (servidor A2A) la búsqueda de vuelos
+## Capacidades
+- Busca vuelos con ask_flights (delega en FlightsAgent A2A).
+- Consulta el clima con ask_weather (delega en WeatherAgent A2A).
+- Gestiona viajes, itinerarios y reservas con las tools de base de datos.
+- Busca información adicional con las tools de MCP (Exa AI).
+
+## Reglas de comportamiento
+
+### Antes de crear o modificar datos
+Pide siempre confirmación explícita al usuario antes de llamar a
+create_trip, create_itinerary, create_reservation, update_trip,
+update_itinerary o update_reservation.
+
+### Reservas
+- Todas las reservas se crean como SIMULADA. Nunca como CONFIRMADA.
+- Nunca solicites ni almacenes datos de tarjeta, CVV, PIN o medios de pago.
+- Informa al usuario que la reserva es simulada y no genera cargo real.
+
+### Preferencias del usuario
+- Si el contexto del usuario (etiqueta <user_context>) contiene preferencias
+  de aerolínea, horario o asiento, mencionaras y priorizaras esas opciones.
+- No inventes preferencias que no estén en ese contexto.
+
+### Salida estructurada (Agent-Driven UI)
+Cuando presentes resultados, incluye siempre bloques <ui> con JSON válido
+en una sola línea después del texto explicativo:
+
+- Vuelos:     <ui type="flights">[{...}]</ui>
+- Clima:      <ui type="weather">[{...}]</ui>
+- Viaje:      <ui type="trip">{...}</ui>
+- Itinerario: <ui type="itinerary">{...}</ui>
+- Reserva:    <ui type="reservation">{...}</ui>
+
+Reenvía los bloques de FlightsAgent y WeatherAgent sin modificarlos.
+El JSON debe ser válido y no contener saltos de línea dentro de la etiqueta.
+"""
+
+# ── Tools de delegación A2A ───────────────────────────────────────────────────
+
 @tool
 def ask_flights(request: str) -> str:
-    """Busca vuelos delegando en el Flights Agent (servidor A2A remoto)."""
+    """Busca vuelos delegando en el FlightsAgent (A2A remoto).
+    Devuelve texto con un bloque <ui type='flights'>[...] </ui>.
+    """
     remote = A2AAgent(endpoint=FLIGHTS_URL)
     return str(remote(request).message)
-tools.append(ask_flights)
 
-# Delega en el Weather Agent (servidor A2A) la consulta de clima
+
 @tool
 def ask_weather(request: str) -> str:
-    """Consulta el clima delegando en el Weather Agent (servidor A2A remoto)."""
+    """Consulta el pronóstico del clima delegando en el WeatherAgent (A2A remoto).
+    Devuelve texto con un bloque <ui type='weather'>[...]</ui>.
+    """
     remote = A2AAgent(endpoint=WEATHER_URL)
     return str(remote(request).message)
-tools.append(ask_weather)
 
 
-# Add MCP client to tools if available
+# ── Tools de base de datos (invocan Lambdas) ──────────────────────────────────
+# IMPORTANTE: user_id se inyecta aquí desde el contexto de sesión.
+# El LLM nunca lo ve ni lo manipula como parámetro.
+
+@tool
+def create_trip(
+    origen: str,
+    destino: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+    viajeros: int,
+    presupuesto: float = None,
+    moneda: str = "COP",
+) -> str:
+    """Crea un nuevo viaje en la base de datos.
+    Llama a esta tool SOLO después de que el usuario haya confirmado los datos.
+
+    Args:
+        origen: Ciudad de origen (ej. 'Bogotá').
+        destino: Ciudad de destino (ej. 'Cartagena').
+        fecha_inicio: Fecha de inicio en formato YYYY-MM-DD.
+        fecha_fin: Fecha de fin en formato YYYY-MM-DD.
+        viajeros: Número de viajeros (mínimo 1).
+        presupuesto: Presupuesto total (número positivo).
+        moneda: Moneda del presupuesto ('COP' o 'USD').
+    """
+    body = {
+        "origen": origen,
+        "destino": destino,
+        "fecha_inicio": fecha_inicio,
+        "fecha_fin": fecha_fin,
+        "viajeros": viajeros,
+        "moneda": moneda,
+    }
+    if presupuesto is not None:
+        body["presupuesto"] = presupuesto
+
+    result = invoke_lambda("CreateTrip", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "body": json.dumps(body),
+    })
+
+    if "error" in result:
+        return f"Error al crear el viaje: {result['error']}"
+
+    return f"Viaje creado exitosamente.\n<ui type=\"trip\">{json.dumps(result)}</ui>"
+
+
+@tool
+def get_trips() -> str:
+    """Lista todos los viajes guardados del usuario."""
+    result = invoke_lambda("GetTrips", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+    })
+    if "error" in result:
+        return f"Error al obtener viajes: {result['error']}"
+
+    trips = result.get("trips", [])
+    if not trips:
+        return "No tienes viajes guardados aún."
+    return f"Tienes {len(trips)} viaje(s).\n<ui type=\"trips\">{json.dumps(trips)}</ui>"
+
+
+@tool
+def update_trip(
+    trip_id: str,
+    origen: str = None,
+    destino: str = None,
+    fecha_inicio: str = None,
+    fecha_fin: str = None,
+    viajeros: int = None,
+    presupuesto: float = None,
+    estado: str = None,
+) -> str:
+    """Actualiza un viaje existente.
+    Llama a esta tool SOLO después de que el usuario haya confirmado los cambios.
+
+    Args:
+        trip_id: ID del viaje a actualizar.
+        origen: Nueva ciudad de origen (opcional).
+        destino: Nueva ciudad de destino (opcional).
+        fecha_inicio: Nueva fecha de inicio YYYY-MM-DD (opcional).
+        fecha_fin: Nueva fecha de fin YYYY-MM-DD (opcional).
+        viajeros: Nuevo número de viajeros (opcional).
+        presupuesto: Nuevo presupuesto (opcional).
+        estado: Nuevo estado: PLANIFICANDO, CONFIRMADO o CANCELADO (opcional).
+    """
+    body = {}
+    if origen is not None:      body["origen"] = origen
+    if destino is not None:     body["destino"] = destino
+    if fecha_inicio is not None: body["fecha_inicio"] = fecha_inicio
+    if fecha_fin is not None:   body["fecha_fin"] = fecha_fin
+    if viajeros is not None:    body["viajeros"] = viajeros
+    if presupuesto is not None: body["presupuesto"] = presupuesto
+    if estado is not None:      body["estado"] = estado
+
+    result = invoke_lambda("UpdateTrip", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "pathParameters": {"id": trip_id},
+        "body": json.dumps(body),
+    })
+    if "error" in result:
+        return f"Error al actualizar el viaje: {result['error']}"
+    return f"Viaje actualizado.\n<ui type=\"trip\">{json.dumps(result)}</ui>"
+
+
+@tool
+def create_itinerary(trip_id: str, dias: list) -> str:
+    """Crea o reemplaza el itinerario de un viaje.
+    Llama a esta tool SOLO después de que el usuario haya confirmado el itinerario.
+
+    Args:
+        trip_id: ID del viaje al que pertenece el itinerario.
+        dias: Lista de días. Cada día es un objeto con:
+              - dia (int): número de día (1, 2, 3...)
+              - fecha (str): fecha en YYYY-MM-DD
+              - actividades (list[str]): lista de actividades del día
+    """
+    result = invoke_lambda("CreateItinerary", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "pathParameters": {"id": trip_id},
+        "body": json.dumps({"dias": dias}),
+    })
+    if "error" in result:
+        return f"Error al crear el itinerario: {result['error']}"
+    return f"Itinerario creado.\n<ui type=\"itinerary\">{json.dumps(result)}</ui>"
+
+
+@tool
+def update_itinerary(trip_id: str, dias: list) -> str:
+    """Actualiza el itinerario de un viaje existente.
+    Llama a esta tool SOLO después de que el usuario haya confirmado los cambios.
+
+    Args:
+        trip_id: ID del viaje.
+        dias: Lista de días actualizada (misma estructura que create_itinerary).
+    """
+    result = invoke_lambda("UpdateItinerary", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "pathParameters": {"id": trip_id},
+        "body": json.dumps({"dias": dias}),
+    })
+    if "error" in result:
+        return f"Error al actualizar el itinerario: {result['error']}"
+    return f"Itinerario actualizado.\n<ui type=\"itinerary\">{json.dumps(result)}</ui>"
+
+
+@tool
+def create_reservation(trip_id: str, tipo: str, detalle: dict) -> str:
+    """Crea una reserva simulada asociada a un viaje.
+    Llama a esta tool SOLO después de que el usuario haya confirmado.
+    La reserva queda como SIMULADA — no genera cargo real alguno.
+
+    Args:
+        trip_id: ID del viaje al que pertenece la reserva.
+        tipo: Tipo de reserva: 'VUELO', 'HOTEL' o 'ACTIVIDAD'.
+        detalle: Diccionario con los detalles (aerolinea, vuelo, precio, etc.).
+                 NUNCA incluyas datos de tarjeta, CVV o PIN.
+    """
+    result = invoke_lambda("CreateReservation", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "body": json.dumps({"tripId": trip_id, "tipo": tipo, "detalle": detalle}),
+    })
+    if "error" in result:
+        return f"Error al crear la reserva: {result['error']}"
+    return (
+        f"Reserva creada (estado: SIMULADA — no genera cargo real).\n"
+        f"<ui type=\"reservation\">{json.dumps(result)}</ui>"
+    )
+
+
+@tool
+def get_reservations(trip_id: str = None) -> str:
+    """Lista las reservas del usuario. Opcionalmente filtra por viaje.
+
+    Args:
+        trip_id: ID del viaje para filtrar (opcional). Si no se pasa, lista todas.
+    """
+    path = "/reservations"
+    qs = {}
+    if trip_id:
+        qs["tripId"] = trip_id
+
+    result = invoke_lambda("GetReservations", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "queryStringParameters": qs if qs else None,
+    })
+    if "error" in result:
+        return f"Error al obtener reservas: {result['error']}"
+
+    reservations = result.get("reservations", [])
+    if not reservations:
+        return "No hay reservas guardadas."
+    return f"{len(reservations)} reserva(s).\n<ui type=\"reservations\">{json.dumps(reservations)}</ui>"
+
+
+@tool
+def update_reservation(res_id: str, estado: str = None, detalle: dict = None) -> str:
+    """Actualiza una reserva (estado o detalle).
+    Llama a esta tool SOLO después de que el usuario haya confirmado.
+    Secuencia válida de estado: SIMULADA -> PENDIENTE -> CONFIRMADA.
+
+    Args:
+        res_id: ID de la reserva a actualizar.
+        estado: Nuevo estado (opcional): 'SIMULADA', 'PENDIENTE' o 'CONFIRMADA'.
+        detalle: Nuevos detalles (opcional). Sin campos de pago.
+    """
+    body = {}
+    if estado is not None:  body["estado"] = estado
+    if detalle is not None: body["detalle"] = detalle
+
+    result = invoke_lambda("UpdateReservation", {
+        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "pathParameters": {"id": res_id},
+        "body": json.dumps(body),
+    })
+    if "error" in result:
+        return f"Error al actualizar la reserva: {result['error']}"
+    return f"Reserva actualizada.\n<ui type=\"reservation\">{json.dumps(result)}</ui>"
+
+
+# ── Registro de tools ──────────────────────────────────────────────────────────
+tools = [
+    ask_flights,
+    ask_weather,
+    create_trip,
+    get_trips,
+    update_trip,
+    create_itinerary,
+    update_itinerary,
+    create_reservation,
+    get_reservations,
+    update_reservation,
+]
+
 for mcp_client in mcp_clients:
     if mcp_client:
         tools.append(mcp_client)
 
 
-def _make_conversation_manager():
-    return NullConversationManager()
+# ── user_id — inyectado desde el contexto de sesión ───────────────────────────
+# Se establece en invoke() antes de cualquier llamada a tools.
+# El LLM nunca lo ve ni lo puede manipular.
+_session_user_id: str = "default-user"
 
+
+def _current_user_id() -> str:
+    return _session_user_id
+
+
+# ── Memoria AgentCore ─────────────────────────────────────────────────────────
 
 def _build_session_manager(session_id: str, actor_id: str):
-    """Gestor de memoria gestionada de AgentCore. None si no hay MEMORY_ID."""
     if not MEMORY_ID:
         return None
     config = AgentCoreMemoryConfig(
         memory_id=MEMORY_ID,
-        session_id=session_id,  # una conversación concreta
-        actor_id=actor_id,      # la identidad del usuario
-        # Namespaces de largo plazo que se inyectan al modelo en cada turno.
-        # Usan las mismas variables que los namespaceTemplates del agentcore.json.
+        session_id=session_id,
+        actor_id=actor_id,
         retrieval_config={
             "/preferences/{actorId}/": RetrievalConfig(top_k=5, relevance_score=0.2),
             "/facts/{actorId}/": RetrievalConfig(top_k=5, relevance_score=0.2),
@@ -88,14 +361,17 @@ def _build_session_manager(session_id: str, actor_id: str):
     )
     return AgentCoreMemorySessionManager(config, region_name=AWS_REGION)
 
-# Reuses one Agent per session_id so each session keeps its own in-process
-# conversation history (best-effort; resets on cold start). The cache is bounded
-# to 128 sessions with LRU eviction (least-recently-used is dropped and its
-# history reset) so a single process serving many sessions cannot leak history
-# between them or grow without limit. For durable history, attach a session manager.
-def agent_factory():
+
+def _make_conversation_manager():
+    return NullConversationManager()
+
+
+# ── Cache de agentes por sesión (LRU, máx 128) ───────────────────────────────
+
+def _agent_factory():
     cache = OrderedDict()
-    def get_or_create_agent(session_id, actor_id):
+
+    def get_or_create(session_id: str, actor_id: str) -> Agent:
         key = (actor_id, session_id)
         if key in cache:
             cache.move_to_end(key)
@@ -104,79 +380,80 @@ def agent_factory():
             cache.popitem(last=False)
 
         session_manager = _build_session_manager(session_id, actor_id)
-        agent_kwargs = {
+        kwargs = {
             "model": load_model(),
-            "system_prompt": DEFAULT_SYSTEM_PROMPT,
+            "system_prompt": SYSTEM_PROMPT,
             "tools": tools,
             "callback_handler": None,
             "hooks": [],
         }
         if session_manager is not None:
-            # El session manager gestiona el historial automáticamente.
-            agent_kwargs["session_manager"] = session_manager
+            kwargs["session_manager"] = session_manager
         else:
-            agent_kwargs["conversation_manager"] = _make_conversation_manager()
+            kwargs["conversation_manager"] = _make_conversation_manager()
 
-        cache[key] = Agent(**agent_kwargs)
+        cache[key] = Agent(**kwargs)
         return cache[key]
-    return get_or_create_agent
-get_or_create_agent = agent_factory()
 
+    return get_or_create
+
+
+get_or_create_agent = _agent_factory()
+
+
+# ── Helpers de payload ────────────────────────────────────────────────────────
 
 def strip_trailing_tool_use(messages: Any) -> list[dict]:
-    """Strip toolUse blocks from the tail until the last message has none."""
+    """Elimina bloques toolUse del final del historial."""
     if not isinstance(messages, list):
         raise ValueError("messages must be a list")
-
     messages = list(messages)
     while messages:
         last = messages[-1]
         if not isinstance(last, dict):
             raise ValueError("each message must be an object")
-        original_content = last.get("content", [])
-        if not isinstance(original_content, list) or not all(isinstance(block, dict) for block in original_content):
+        original = last.get("content", [])
+        if not isinstance(original, list) or not all(isinstance(b, dict) for b in original):
             raise ValueError("each message content value must be a list of content blocks")
-
-        content = [block for block in original_content if "toolUse" not in block]
-        if len(content) == len(original_content):
+        content = [b for b in original if "toolUse" not in b]
+        if len(content) == len(original):
             break
         if content:
             messages[-1] = {**last, "content": content}
             break
         messages.pop()
-
     return messages
 
 
 def _extract_prompt(payload: dict):
-    """Accept validated harness messages, tool results, or a plain prompt string."""
     if not isinstance(payload, dict):
         raise ValueError("payload must be a JSON object")
     if "messages" in payload:
         return strip_trailing_tool_use(payload["messages"])
     if "tool_results" in payload:
-        tool_results = payload["tool_results"]
-        if not isinstance(tool_results, list) or not all(
-            isinstance(tool_result, dict) and isinstance(tool_result.get("toolUseId"), str)
-            for tool_result in tool_results
+        trs = payload["tool_results"]
+        if not isinstance(trs, list) or not all(
+            isinstance(tr, dict) and isinstance(tr.get("toolUseId"), str) for tr in trs
         ):
             raise ValueError("tool_results must contain objects with a toolUseId string")
         return [{"role": "user", "content": [{"toolResult": {
             "toolUseId": tr["toolUseId"],
             "status": tr.get("status", "success"),
             "content": tr.get("content", []),
-        }} for tr in tool_results]}]
+        }} for tr in trs]}]
     prompt = payload.get("prompt", "")
     if not isinstance(prompt, str):
         raise ValueError("prompt must be a string")
     return prompt
 
 
+# ── Entrypoint ────────────────────────────────────────────────────────────────
 
 @app.entrypoint
 async def invoke(payload, context):
-    log.info("Invoking Agent.....")
+    global _session_user_id
 
+    log.info("Invoking OrchestratorAgent")
 
     session_id = getattr(context, "session_id", None) or "default-session"
     actor_id = (
@@ -184,14 +461,15 @@ async def invoke(payload, context):
         or (payload.get("actor_id") if isinstance(payload, dict) else None)
         or "default-user"
     )
-    agent = get_or_create_agent(session_id, actor_id)
 
+    # Inyectar user_id en el scope del módulo antes de cualquier tool call.
+    # El LLM nunca recibe ni puede cambiar este valor.
+    _session_user_id = actor_id
+
+    agent = get_or_create_agent(session_id, actor_id)
     prompt = _extract_prompt(payload)
 
-
-    async for event in agent.stream_async(
-        prompt,
-    ):
+    async for event in agent.stream_async(prompt):
         if not isinstance(event, dict) or "event" not in event:
             continue
         cbs = event["event"].get("contentBlockStart")

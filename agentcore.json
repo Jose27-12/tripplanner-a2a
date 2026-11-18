@@ -34,9 +34,12 @@
       "runtimeVersion": "PYTHON_3_14",
       "networkMode": "PUBLIC",
       "protocol": "HTTP",
-       "envVars": [
+      "envVars": [
         { "name": "FLIGHTS_AGENT_URL", "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_FlightsAgent-YouKp45zfD/invocations" },
-        { "name": "WEATHER_AGENT_URL", "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_WeatherAgent-5pFZx8Ek8T/invocations" }
+        { "name": "WEATHER_AGENT_URL", "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_WeatherAgent-5pFZx8Ek8T/invocations" },
+        { "name": "TRIP_MEMORY_ID",   "value": "TripPlannerA2A_TripPlannerMemory-4mIn6YEZjO" },
+        { "name": "BACKEND_STAGE",    "value": "prod" },
+        { "name": "AWS_REGION",       "value": "us-east-1" }
       ]
     }
   ],

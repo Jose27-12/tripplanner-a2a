@@ -1,0 +1,44 @@
+# ── Secretos ────────────────────────────────────────────────────────────────
+.env.local
+.env
+*.env
+
+# ── CDK ─────────────────────────────────────────────────────────────────────
+cdk/cdk.out/
+cdk/node_modules/
+cdk/dist/
+
+# ── CLI / caché AgentCore ────────────────────────────────────────────────────
+.cli/*
+.cache/*
+!.cli/deployed-state.json
+
+# ── SAM / Backend ────────────────────────────────────────────────────────────
+backend/.aws-sam/
+backend/samconfig.toml   # contiene valores de deploy, se genera en --guided
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.py[cod]
+
+# ── Frontend ─────────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env
+
+# ── Python general ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+
+# ── Node general ─────────────────────────────────────────────────────────────
+node_modules/
+
+# ── IDE / OS ─────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

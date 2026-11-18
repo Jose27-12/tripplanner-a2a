@@ -66,8 +66,6 @@ Resources:
           AttributeDataType: String
           Required: false
           Mutable: true
-      UserPoolAddOns:
-        AdvancedSecurityMode: OFF
       DeletionProtection: INACTIVE
 
   TripPlannerUserPoolClient:

@@ -1,0 +1,7 @@
+{
+  "ApiUrl": "https://h4s4e8hqlg.execute-api.us-east-1.amazonaws.com/prod",
+  "UserPoolId": "us-east-1_7ICuf3puR",
+  "UserPoolClientId": "752fpcc8a5ea2c09adrlq5iobt",
+  "TableName": "TripPlannerTable-prod",
+  "Region": "us-east-1"
+}

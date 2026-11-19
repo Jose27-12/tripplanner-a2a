@@ -18,5 +18,5 @@ Get-ChildItem (Join-Path $root "functions") -Directory | ForEach-Object {
     if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
     Copy-Item -Recurse -Force $source $dest
     Get-ChildItem $dest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-    Write-Host "common/ sincronizado en $($_.Name)"
+    Write-Output "common/ sincronizado en $($_.Name)"
 }

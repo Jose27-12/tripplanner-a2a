@@ -30,3 +30,12 @@ sam deploy --stack-name TripPlannerBackend --region us-east-1 `
     --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM --resolve-s3 `
     --no-confirm-changeset --no-fail-on-empty-changeset
 if ($LASTEXITCODE -ne 0) { throw "Fallo sam deploy" }
+
+# SAM no crea un nuevo deployment de API Gateway cuando solo cambia un
+# parámetro (p. ej. FrontendOrigin en el CORS): se publica explícitamente.
+Write-Host "==> Publicando el stage '$Stage' de API Gateway..." -ForegroundColor Cyan
+$apiId = aws cloudformation describe-stack-resource --stack-name TripPlannerBackend --region us-east-1 `
+    --logical-resource-id TripPlannerApi --query "StackResourceDetail.PhysicalResourceId" --output text
+aws apigateway create-deployment --rest-api-id $apiId --stage-name $Stage --region us-east-1 `
+    --description "deploy.ps1 $(Get-Date -Format s)" --query id --output text | Out-Null
+Write-Host "Backend desplegado." -ForegroundColor Green

@@ -1,0 +1,37 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeTripPlannerBackendLambdas",
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": [
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-CreateTrip-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-GetTrips-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-UpdateTrip-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-CreateItinerary-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-GetItinerary-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-UpdateItinerary-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-CreateReservation-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-GetReservations-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-UpdateReservation-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-GetPreferences-prod",
+        "arn:aws:lambda:us-east-1:740314716244:function:TripPlanner-UpdatePreferences-prod"
+      ]
+    },
+    {
+      "Sid": "InvokeSpecialistAgentsA2A",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:InvokeAgentRuntime",
+        "bedrock-agentcore:InvokeAgentRuntimeForUser"
+      ],
+      "Resource": [
+        "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_FlightsAgent-YouKp45zfD",
+        "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_FlightsAgent-YouKp45zfD/*",
+        "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_WeatherAgent-5pFZx8Ek8T",
+        "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_WeatherAgent-5pFZx8Ek8T/*"
+      ]
+    }
+  ]
+}

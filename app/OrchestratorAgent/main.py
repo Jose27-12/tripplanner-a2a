@@ -3,7 +3,6 @@ import os
 from collections import OrderedDict
 from typing import Any
 
-import boto3
 from bedrock_agentcore.memory.integrations.strands.config import (
     AgentCoreMemoryConfig,
     RetrievalConfig,
@@ -18,9 +17,17 @@ from strands.agent.conversation_manager.null_conversation_manager import (
     NullConversationManager,
 )
 
+from a2a_auth import build_client_config
 from lambda_tools.client import invoke_lambda
 from mcp_client.client import get_streamable_http_mcp_client
 from model.load import load_model
+from user_context import (
+    UnauthenticatedError,
+    current_user_id,
+    reset_current_user_id,
+    resolve_user_id,
+    set_current_user_id,
+)
 
 app = BedrockAgentCoreApp()
 log = app.logger
@@ -57,9 +64,16 @@ update_itinerary o update_reservation.
 - Informa al usuario que la reserva es simulada y no genera cargo real.
 
 ### Preferencias del usuario
-- Si el contexto del usuario (etiqueta <user_context>) contiene preferencias
-  de aerolínea, horario o asiento, mencionaras y priorizaras esas opciones.
-- No inventes preferencias que no estén en ese contexto.
+- Al empezar a planificar un viaje, consulta get_preferences y tenlas en
+  cuenta (aerolíneas, tipo de presupuesto, actividades, restricciones).
+- Si el contexto del usuario (etiqueta <user_context>) o get_preferences
+  contienen preferencias de aerolínea, horario o asiento, menciónalas y
+  prioriza esas opciones.
+- Si el usuario expresa una preferencia nueva, ofrece guardarla con
+  update_preferences (previa confirmación).
+- No inventes preferencias que no estén en esas fuentes.
+- La memoria conversacional ayuda a conversar; la fuente de verdad de viajes,
+  itinerarios, reservas y preferencias es la base de datos (tools).
 
 ### Salida estructurada (Agent-Driven UI)
 Cuando presentes resultados, incluye siempre bloques <ui> con JSON válido
@@ -68,8 +82,10 @@ en una sola línea después del texto explicativo:
 - Vuelos:     <ui type="flights">[{...}]</ui>
 - Clima:      <ui type="weather">[{...}]</ui>
 - Viaje:      <ui type="trip">{...}</ui>
+- Viajes:     <ui type="trips">[{...}]</ui>
 - Itinerario: <ui type="itinerary">{...}</ui>
 - Reserva:    <ui type="reservation">{...}</ui>
+- Reservas:   <ui type="reservations">[{...}]</ui>
 
 Reenvía los bloques de FlightsAgent y WeatherAgent sin modificarlos.
 El JSON debe ser válido y no contener saltos de línea dentro de la etiqueta.
@@ -77,22 +93,40 @@ El JSON debe ser válido y no contener saltos de línea dentro de la etiqueta.
 
 # ── Tools de delegación A2A ───────────────────────────────────────────────────
 
+async def _ask_remote(endpoint: str, request: str) -> str:
+    """Delega una petición en un agente A2A remoto (firmado con SigV4 en AWS)."""
+    if not endpoint:
+        return "El agente especialista no está configurado (falta su URL)."
+    endpoint = endpoint if endpoint.endswith("/") else endpoint + "/"
+    config = build_client_config(endpoint, current_user_id())
+    try:
+        remote = A2AAgent(endpoint=endpoint, client_config=config)
+        result = await remote.invoke_async(request)
+        return str(result.message)
+    except Exception:
+        log.exception("Falló la llamada A2A a %s", endpoint)
+        return "El agente especialista no está disponible en este momento."
+    finally:
+        if config is not None and config.httpx_client is not None:
+            await config.httpx_client.aclose()
+
+
 @tool
-def ask_flights(request: str) -> str:
+async def ask_flights(request: str) -> str:
     """Busca vuelos delegando en el FlightsAgent (A2A remoto).
-    Devuelve texto con un bloque <ui type='flights'>[...] </ui>.
+    Incluye en la petición origen, destino, fecha(s) y número de pasajeros.
+    Devuelve texto con un bloque <ui type='flights'>[...]</ui>.
     """
-    remote = A2AAgent(endpoint=FLIGHTS_URL)
-    return str(remote(request).message)
+    return await _ask_remote(FLIGHTS_URL, request)
 
 
 @tool
-def ask_weather(request: str) -> str:
+async def ask_weather(request: str) -> str:
     """Consulta el pronóstico del clima delegando en el WeatherAgent (A2A remoto).
+    Incluye en la petición la ciudad y el rango de fechas.
     Devuelve texto con un bloque <ui type='weather'>[...]</ui>.
     """
-    remote = A2AAgent(endpoint=WEATHER_URL)
-    return str(remote(request).message)
+    return await _ask_remote(WEATHER_URL, request)
 
 
 # ── Tools de base de datos (invocan Lambdas) ──────────────────────────────────
@@ -133,7 +167,7 @@ def create_trip(
         body["presupuesto"] = presupuesto
 
     result = invoke_lambda("CreateTrip", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
         "body": json.dumps(body),
     })
 
@@ -147,7 +181,7 @@ def create_trip(
 def get_trips() -> str:
     """Lista todos los viajes guardados del usuario."""
     result = invoke_lambda("GetTrips", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
     })
     if "error" in result:
         return f"Error al obtener viajes: {result['error']}"
@@ -192,7 +226,7 @@ def update_trip(
     if estado is not None:      body["estado"] = estado
 
     result = invoke_lambda("UpdateTrip", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
         "pathParameters": {"id": trip_id},
         "body": json.dumps(body),
     })
@@ -214,7 +248,7 @@ def create_itinerary(trip_id: str, dias: list) -> str:
               - actividades (list[str]): lista de actividades del día
     """
     result = invoke_lambda("CreateItinerary", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
         "pathParameters": {"id": trip_id},
         "body": json.dumps({"dias": dias}),
     })
@@ -233,7 +267,7 @@ def update_itinerary(trip_id: str, dias: list) -> str:
         dias: Lista de días actualizada (misma estructura que create_itinerary).
     """
     result = invoke_lambda("UpdateItinerary", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
         "pathParameters": {"id": trip_id},
         "body": json.dumps({"dias": dias}),
     })
@@ -255,7 +289,7 @@ def create_reservation(trip_id: str, tipo: str, detalle: dict) -> str:
                  NUNCA incluyas datos de tarjeta, CVV o PIN.
     """
     result = invoke_lambda("CreateReservation", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
         "body": json.dumps({"tripId": trip_id, "tipo": tipo, "detalle": detalle}),
     })
     if "error" in result:
@@ -273,13 +307,12 @@ def get_reservations(trip_id: str = None) -> str:
     Args:
         trip_id: ID del viaje para filtrar (opcional). Si no se pasa, lista todas.
     """
-    path = "/reservations"
     qs = {}
     if trip_id:
         qs["tripId"] = trip_id
 
     result = invoke_lambda("GetReservations", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
         "queryStringParameters": qs if qs else None,
     })
     if "error" in result:
@@ -307,13 +340,78 @@ def update_reservation(res_id: str, estado: str = None, detalle: dict = None) ->
     if detalle is not None: body["detalle"] = detalle
 
     result = invoke_lambda("UpdateReservation", {
-        "requestContext": {"authorizer": {"claims": {"sub": _current_user_id()}}},
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
         "pathParameters": {"id": res_id},
         "body": json.dumps(body),
     })
     if "error" in result:
         return f"Error al actualizar la reserva: {result['error']}"
     return f"Reserva actualizada.\n<ui type=\"reservation\">{json.dumps(result)}</ui>"
+
+
+@tool
+def get_itinerary(trip_id: str) -> str:
+    """Obtiene el itinerario guardado de un viaje.
+
+    Args:
+        trip_id: ID del viaje.
+    """
+    result = invoke_lambda("GetItinerary", {
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
+        "pathParameters": {"id": trip_id},
+    })
+    if "error" in result:
+        return f"No se encontró el itinerario: {result['error']}"
+    return f"Itinerario del viaje.\n<ui type=\"itinerary\">{json.dumps(result)}</ui>"
+
+
+@tool
+def get_preferences() -> str:
+    """Obtiene las preferencias de viaje guardadas del usuario
+    (actividades, tipo de presupuesto, restricciones, aerolíneas, asiento)."""
+    result = invoke_lambda("GetPreferences", {
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
+    })
+    if "error" in result:
+        return f"Error al obtener preferencias: {result['error']}"
+    if not result:
+        return "El usuario aún no tiene preferencias guardadas."
+    return f"Preferencias guardadas del usuario: {json.dumps(result, ensure_ascii=False)}"
+
+
+@tool
+def update_preferences(
+    actividades: list = None,
+    presupuesto_tipo: str = None,
+    restricciones: list = None,
+    aerolineas_preferidas: list = None,
+    asiento_preferido: str = None,
+) -> str:
+    """Guarda las preferencias de viaje del usuario (reemplaza las anteriores).
+    Llama a esta tool SOLO después de que el usuario haya confirmado.
+    Primero usa get_preferences para conservar los valores que no cambian.
+
+    Args:
+        actividades: Tipos de actividad preferidos (ej. ['playa', 'gastronomia']).
+        presupuesto_tipo: 'ECONOMICO', 'MODERADO' o 'PREMIUM'.
+        restricciones: Restricciones (ej. ['vegetariano', 'movilidad reducida']).
+        aerolineas_preferidas: Aerolíneas preferidas (ej. ['Avianca']).
+        asiento_preferido: 'ventana', 'pasillo' o 'indiferente'.
+    """
+    body = {k: v for k, v in {
+        "actividades": actividades,
+        "presupuesto_tipo": presupuesto_tipo,
+        "restricciones": restricciones,
+        "aerolineas_preferidas": aerolineas_preferidas,
+        "asiento_preferido": asiento_preferido,
+    }.items() if v is not None}
+    result = invoke_lambda("UpdatePreferences", {
+        "requestContext": {"authorizer": {"claims": {"sub": current_user_id()}}},
+        "body": json.dumps(body),
+    })
+    if "error" in result:
+        return f"Error al guardar preferencias: {result['error']}"
+    return f"Preferencias guardadas: {json.dumps(result, ensure_ascii=False)}"
 
 
 # ── Registro de tools ──────────────────────────────────────────────────────────
@@ -328,21 +426,14 @@ tools = [
     create_reservation,
     get_reservations,
     update_reservation,
+    get_itinerary,
+    get_preferences,
+    update_preferences,
 ]
 
 for mcp_client in mcp_clients:
     if mcp_client:
         tools.append(mcp_client)
-
-
-# ── user_id — inyectado desde el contexto de sesión ───────────────────────────
-# Se establece en invoke() antes de cualquier llamada a tools.
-# El LLM nunca lo ve ni lo puede manipular.
-_session_user_id: str = "default-user"
-
-
-def _current_user_id() -> str:
-    return _session_user_id
 
 
 # ── Memoria AgentCore ─────────────────────────────────────────────────────────
@@ -451,31 +542,33 @@ def _extract_prompt(payload: dict):
 
 @app.entrypoint
 async def invoke(payload, context):
-    global _session_user_id
-
     log.info("Invoking OrchestratorAgent")
 
+    # user_id = claim `sub` del JWT de Cognito ya validado por AgentCore.
+    # Nunca se toma del payload: el navegador no puede elegir identidad.
+    try:
+        user_id = resolve_user_id(context)
+    except UnauthenticatedError as exc:
+        yield {"error": str(exc)}
+        return
+
     session_id = getattr(context, "session_id", None) or "default-session"
-    actor_id = (
-        getattr(context, "actor_id", None)
-        or (payload.get("actor_id") if isinstance(payload, dict) else None)
-        or "default-user"
-    )
+    token = set_current_user_id(user_id)
+    try:
+        # La memoria de AgentCore (actor_id) y la caché de agentes también se
+        # aíslan por usuario.
+        agent = get_or_create_agent(session_id, user_id)
+        prompt = _extract_prompt(payload)
 
-    # Inyectar user_id en el scope del módulo antes de cualquier tool call.
-    # El LLM nunca recibe ni puede cambiar este valor.
-    _session_user_id = actor_id
-
-    agent = get_or_create_agent(session_id, actor_id)
-    prompt = _extract_prompt(payload)
-
-    async for event in agent.stream_async(prompt):
-        if not isinstance(event, dict) or "event" not in event:
-            continue
-        cbs = event["event"].get("contentBlockStart")
-        if cbs is not None and not cbs.get("start"):
-            continue
-        yield event
+        async for event in agent.stream_async(prompt):
+            if not isinstance(event, dict) or "event" not in event:
+                continue
+            cbs = event["event"].get("contentBlockStart")
+            if cbs is not None and not cbs.get("start"):
+                continue
+            yield event
+    finally:
+        reset_current_user_id(token)
 
 
 if __name__ == "__main__":

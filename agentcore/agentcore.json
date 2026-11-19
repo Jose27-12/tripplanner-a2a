@@ -15,7 +15,13 @@
       "codeLocation": "app/FlightsAgent/",
       "runtimeVersion": "PYTHON_3_14",
       "networkMode": "PUBLIC",
-      "protocol": "A2A"
+      "protocol": "A2A",
+      "envVars": [
+        {
+          "name": "AGENTCORE_RUNTIME_URL",
+          "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_FlightsAgent-YouKp45zfD/invocations/"
+        }
+      ]
     },
     {
       "name": "WeatherAgent",
@@ -24,7 +30,13 @@
       "codeLocation": "app/WeatherAgent/",
       "runtimeVersion": "PYTHON_3_14",
       "networkMode": "PUBLIC",
-      "protocol": "A2A"
+      "protocol": "A2A",
+      "envVars": [
+        {
+          "name": "AGENTCORE_RUNTIME_URL",
+          "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_WeatherAgent-5pFZx8Ek8T/invocations/"
+        }
+      ]
     },
     {
       "name": "OrchestratorAgent",
@@ -35,42 +47,83 @@
       "networkMode": "PUBLIC",
       "protocol": "HTTP",
       "envVars": [
-        { "name": "FLIGHTS_AGENT_URL", "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_FlightsAgent-YouKp45zfD/invocations" },
-        { "name": "WEATHER_AGENT_URL", "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_WeatherAgent-5pFZx8Ek8T/invocations" },
-        { "name": "TRIP_MEMORY_ID",    "value": "TripPlannerA2A_TripPlannerMemory-4mIn6YEZjO" },
-        { "name": "BACKEND_STAGE",     "value": "prod" },
-        { "name": "AWS_REGION",        "value": "us-east-1" }
-      ]
+        {
+          "name": "FLIGHTS_AGENT_URL",
+          "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_FlightsAgent-YouKp45zfD/invocations/"
+        },
+        {
+          "name": "WEATHER_AGENT_URL",
+          "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_WeatherAgent-5pFZx8Ek8T/invocations/"
+        },
+        {
+          "name": "TRIP_MEMORY_ID",
+          "value": "TripPlannerA2A_TripPlannerMemory-4mIn6YEZjO"
+        },
+        {
+          "name": "BACKEND_STAGE",
+          "value": "prod"
+        },
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        }
+      ],
+      "requestHeaderAllowlist": [
+        "Authorization"
+      ],
+      "additionalPolicies": [
+        "iam-policy.json"
+      ],
+      "authorizerType": "CUSTOM_JWT",
+      "authorizerConfiguration": {
+        "customJwtAuthorizer": {
+          "discoveryUrl": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_7ICuf3puR/.well-known/openid-configuration",
+          "allowedClients": [
+            "752fpcc8a5ea2c09adrlq5iobt"
+          ]
+        }
+      }
     }
   ],
   "memories": [
-  {
-    "name": "TripPlannerMemory",
-    "eventExpiryDuration": 90,
-    "strategies": [
-      {
-        "type": "USER_PREFERENCE",
-        "name": "TravelerPreferences",
-        "description": "Preferencias de viaje del usuario (horarios, aerolíneas, asientos).",
-        "namespaceTemplates": ["/preferences/{actorId}/"]
-      },
-      {
-        "type": "SUMMARIZATION",
-        "name": "SessionSummarizer",
-        "description": "Resumen por sesión de planificación de viaje.",
-        "namespaceTemplates": ["/summaries/{actorId}/{sessionId}/"]
-      },
-      {
-        "type": "SEMANTIC",
-        "name": "TravelFacts",
-        "description": "Hechos relevantes del viaje recuperables por significado.",
-        "namespaceTemplates": ["/facts/{actorId}/"]
-      }
-    ]
-  }
-],
+    {
+      "name": "TripPlannerMemory",
+      "eventExpiryDuration": 90,
+      "strategies": [
+        {
+          "type": "USER_PREFERENCE",
+          "name": "TravelerPreferences",
+          "description": "Preferencias de viaje del usuario (horarios, aerolíneas, asientos).",
+          "namespaceTemplates": [
+            "/preferences/{actorId}/"
+          ]
+        },
+        {
+          "type": "SUMMARIZATION",
+          "name": "SessionSummarizer",
+          "description": "Resumen por sesión de planificación de viaje.",
+          "namespaceTemplates": [
+            "/summaries/{actorId}/{sessionId}/"
+          ]
+        },
+        {
+          "type": "SEMANTIC",
+          "name": "TravelFacts",
+          "description": "Hechos relevantes del viaje recuperables por significado.",
+          "namespaceTemplates": [
+            "/facts/{actorId}/"
+          ]
+        }
+      ]
+    }
+  ],
   "knowledgeBases": [],
-  "credentials": [],
+  "credentials": [
+    {
+      "authorizerType": "ApiKeyCredentialProvider",
+      "name": "GeminiApiKey"
+    }
+  ],
   "evaluators": [],
   "onlineEvalConfigs": [],
   "agentCoreGateways": [],

@@ -179,6 +179,30 @@ Componente frontend: `ReservationList` — refresca la lista de reservas con bad
 
 ---
 
+### `trips` — Lista de viajes del usuario
+
+Producido por: **OrchestratorAgent** después de usar `get_trips`. Es un array de objetos con la misma forma que `trip`.
+
+```json
+<ui type="trips">[{"tripId": "01ARZ...", "origen": "Bogotá", "destino": "Cartagena", "fecha_inicio": "2026-12-10", "fecha_fin": "2026-12-13", "viajeros": 3, "presupuesto": 5000000, "moneda": "COP", "estado": "PLANIFICANDO"}]</ui>
+```
+
+Componente frontend: `TripCard` repetido en una grilla.
+
+---
+
+### `reservations` — Lista de reservas
+
+Producido por: **OrchestratorAgent** después de usar `get_reservations`. Es un array de objetos con la misma forma que `reservation`.
+
+```json
+<ui type="reservations">[{"resId": "01ARZ...", "tripId": "01ARZ...", "tipo": "VUELO", "estado": "SIMULADA", "detalle": {"aerolinea": "LATAM", "vuelo": "LA4410"}}]</ui>
+```
+
+Componente frontend: `ReservationList`.
+
+---
+
 ## Instrucción al Orchestrator (extracto del system prompt)
 
 ```

@@ -21,6 +21,7 @@ from a2a_auth import build_client_config
 from lambda_tools.client import invoke_lambda
 from mcp_client.client import get_streamable_http_mcp_client
 from model.load import load_model
+import ui_blocks
 from user_context import (
     UnauthenticatedError,
     current_user_id,
@@ -76,19 +77,10 @@ update_itinerary o update_reservation.
   itinerarios, reservas y preferencias es la base de datos (tools).
 
 ### Salida estructurada (Agent-Driven UI)
-Cuando presentes resultados, incluye siempre bloques <ui> con JSON válido
-en una sola línea después del texto explicativo:
-
-- Vuelos:     <ui type="flights">[{...}]</ui>
-- Clima:      <ui type="weather">[{...}]</ui>
-- Viaje:      <ui type="trip">{...}</ui>
-- Viajes:     <ui type="trips">[{...}]</ui>
-- Itinerario: <ui type="itinerary">{...}</ui>
-- Reserva:    <ui type="reservation">{...}</ui>
-- Reservas:   <ui type="reservations">[{...}]</ui>
-
-Reenvía los bloques de FlightsAgent y WeatherAgent sin modificarlos.
-El JSON debe ser válido y no contener saltos de línea dentro de la etiqueta.
+Los resultados de vuelos, clima, viajes, itinerarios y reservas los muestra
+el sistema automáticamente como tarjetas cuando usas las tools. NO escribas
+bloques <ui>, JSON ni tablas con esos datos: limítate a una explicación breve
+(resumen, opción recomendada, siguiente paso) en texto.
 """
 
 # ── Tools de delegación A2A ───────────────────────────────────────────────────
@@ -102,7 +94,7 @@ async def _ask_remote(endpoint: str, request: str) -> str:
     try:
         remote = A2AAgent(endpoint=endpoint, client_config=config)
         result = await remote.invoke_async(request)
-        return str(result.message)
+        return ui_blocks.forward_blocks_from(str(result.message))
     except Exception:
         log.exception("Falló la llamada A2A a %s", endpoint)
         return "El agente especialista no está disponible en este momento."
@@ -115,7 +107,7 @@ async def _ask_remote(endpoint: str, request: str) -> str:
 async def ask_flights(request: str) -> str:
     """Busca vuelos delegando en el FlightsAgent (A2A remoto).
     Incluye en la petición origen, destino, fecha(s) y número de pasajeros.
-    Devuelve texto con un bloque <ui type='flights'>[...]</ui>.
+    Los vuelos se muestran al usuario como tarjetas automáticamente.
     """
     return await _ask_remote(FLIGHTS_URL, request)
 
@@ -124,7 +116,7 @@ async def ask_flights(request: str) -> str:
 async def ask_weather(request: str) -> str:
     """Consulta el pronóstico del clima delegando en el WeatherAgent (A2A remoto).
     Incluye en la petición la ciudad y el rango de fechas.
-    Devuelve texto con un bloque <ui type='weather'>[...]</ui>.
+    El pronóstico se muestra al usuario como tarjetas automáticamente.
     """
     return await _ask_remote(WEATHER_URL, request)
 
@@ -174,7 +166,7 @@ def create_trip(
     if "error" in result:
         return f"Error al crear el viaje: {result['error']}"
 
-    return f"Viaje creado exitosamente.\n<ui type=\"trip\">{json.dumps(result)}</ui>"
+    return f"Viaje creado exitosamente.\n{ui_blocks.emit('trip', result)}"
 
 
 @tool
@@ -189,7 +181,7 @@ def get_trips() -> str:
     trips = result.get("trips", [])
     if not trips:
         return "No tienes viajes guardados aún."
-    return f"Tienes {len(trips)} viaje(s).\n<ui type=\"trips\">{json.dumps(trips)}</ui>"
+    return f"Tienes {len(trips)} viaje(s).\n{ui_blocks.emit('trips', trips)}"
 
 
 @tool
@@ -232,7 +224,7 @@ def update_trip(
     })
     if "error" in result:
         return f"Error al actualizar el viaje: {result['error']}"
-    return f"Viaje actualizado.\n<ui type=\"trip\">{json.dumps(result)}</ui>"
+    return f"Viaje actualizado.\n{ui_blocks.emit('trip', result)}"
 
 
 @tool
@@ -254,7 +246,7 @@ def create_itinerary(trip_id: str, dias: list) -> str:
     })
     if "error" in result:
         return f"Error al crear el itinerario: {result['error']}"
-    return f"Itinerario creado.\n<ui type=\"itinerary\">{json.dumps(result)}</ui>"
+    return f"Itinerario creado.\n{ui_blocks.emit('itinerary', result)}"
 
 
 @tool
@@ -273,7 +265,7 @@ def update_itinerary(trip_id: str, dias: list) -> str:
     })
     if "error" in result:
         return f"Error al actualizar el itinerario: {result['error']}"
-    return f"Itinerario actualizado.\n<ui type=\"itinerary\">{json.dumps(result)}</ui>"
+    return f"Itinerario actualizado.\n{ui_blocks.emit('itinerary', result)}"
 
 
 @tool
@@ -296,7 +288,7 @@ def create_reservation(trip_id: str, tipo: str, detalle: dict) -> str:
         return f"Error al crear la reserva: {result['error']}"
     return (
         f"Reserva creada (estado: SIMULADA — no genera cargo real).\n"
-        f"<ui type=\"reservation\">{json.dumps(result)}</ui>"
+        f"{ui_blocks.emit('reservation', result)}"
     )
 
 
@@ -321,7 +313,7 @@ def get_reservations(trip_id: str = None) -> str:
     reservations = result.get("reservations", [])
     if not reservations:
         return "No hay reservas guardadas."
-    return f"{len(reservations)} reserva(s).\n<ui type=\"reservations\">{json.dumps(reservations)}</ui>"
+    return f"{len(reservations)} reserva(s).\n{ui_blocks.emit('reservations', reservations)}"
 
 
 @tool
@@ -346,7 +338,7 @@ def update_reservation(res_id: str, estado: str = None, detalle: dict = None) ->
     })
     if "error" in result:
         return f"Error al actualizar la reserva: {result['error']}"
-    return f"Reserva actualizada.\n<ui type=\"reservation\">{json.dumps(result)}</ui>"
+    return f"Reserva actualizada.\n{ui_blocks.emit('reservation', result)}"
 
 
 @tool
@@ -362,7 +354,7 @@ def get_itinerary(trip_id: str) -> str:
     })
     if "error" in result:
         return f"No se encontró el itinerario: {result['error']}"
-    return f"Itinerario del viaje.\n<ui type=\"itinerary\">{json.dumps(result)}</ui>"
+    return f"Itinerario del viaje.\n{ui_blocks.emit('itinerary', result)}"
 
 
 @tool
@@ -554,6 +546,7 @@ async def invoke(payload, context):
 
     session_id = getattr(context, "session_id", None) or "default-session"
     token = set_current_user_id(user_id)
+    ui_token = ui_blocks.start_collecting()
     try:
         # La memoria de AgentCore (actor_id) y la caché de agentes también se
         # aíslan por usuario.
@@ -567,8 +560,20 @@ async def invoke(payload, context):
             if cbs is not None and not cbs.get("start"):
                 continue
             yield event
+            # Bloques <ui> producidos por las tools: se envían al navegador tal
+            # cual, sin pasar por el modelo (ver ui_blocks.py).
+            for block in ui_blocks.drain():
+                yield _text_event(block)
+        for block in ui_blocks.drain():
+            yield _text_event(block)
     finally:
+        ui_blocks.stop_collecting(ui_token)
         reset_current_user_id(token)
+
+
+def _text_event(text: str) -> dict:
+    """Evento de texto con el mismo formato que los deltas del modelo."""
+    return {"event": {"contentBlockDelta": {"delta": {"text": text}}}}
 
 
 if __name__ == "__main__":

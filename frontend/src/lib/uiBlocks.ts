@@ -12,13 +12,18 @@ const OPEN = /<ui\s+type\s*=\s*["']([\w-]+)["']\s*>[\s\S]*$/;
 
 export function parseAgentText(text: string): Segment[] {
   const segments: Segment[] = [];
+  const seen = new Set<string>();
   let last = 0;
   for (const match of text.matchAll(BLOCK)) {
     const start = match.index ?? 0;
     if (start > last) segments.push({ kind: "text", text: text.slice(last, start) });
     const [, type, raw] = match;
     try {
-      segments.push({ kind: "ui", type, data: JSON.parse(raw.trim()) });
+      const data = JSON.parse(raw.trim());
+      // El servidor ya emite los bloques de las tools; si el modelo repite uno idéntico, se ignora.
+      const key = `${type}:${JSON.stringify(data)}`;
+      if (!seen.has(key)) segments.push({ kind: "ui", type, data });
+      seen.add(key);
     } catch {
       segments.push({ kind: "ui-error", type, raw });
     }

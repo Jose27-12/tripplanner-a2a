@@ -17,6 +17,16 @@
             "runtimeId": "TripPlannerA2A_FlightsAgent-YouKp45zfD",
             "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_FlightsAgent-YouKp45zfD",
             "roleArn": "arn:aws:iam::740314716244:role/AgentCore-TripPlannerA2A--ApplicationAgentFlightsAg-kmOtsrlNiJ1X"
+          },
+          "WeatherMCP": {
+            "runtimeId": "TripPlannerA2A_WeatherMCP-JLqLO9B7Z3",
+            "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_WeatherMCP-JLqLO9B7Z3",
+            "roleArn": "arn:aws:iam::740314716244:role/AgentCore-TripPlannerA2A--ApplicationAgentWeatherMC-OjNMmrFDqXLe"
+          },
+          "FlightsMCP": {
+            "runtimeId": "TripPlannerA2A_FlightsMCP-8I11Q2EiQM",
+            "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_FlightsMCP-8I11Q2EiQM",
+            "roleArn": "arn:aws:iam::740314716244:role/AgentCore-TripPlannerA2A--ApplicationAgentFlightsMC-KQI4v1BtXin9"
           }
         },
         "memories": {
@@ -25,8 +35,14 @@
             "memoryArn": "arn:aws:bedrock-agentcore:us-east-1:740314716244:memory/TripPlannerA2A_TripPlannerMemory-4mIn6YEZjO"
           }
         },
+        "credentials": {
+          "GeminiApiKey": {
+            "credentialProviderArn": "arn:aws:bedrock-agentcore:us-east-1:740314716244:token-vault/default/apikeycredentialprovider/GeminiApiKey"
+          }
+        },
         "stackName": "AgentCore-TripPlannerA2A-default",
-        "deployHash": "39694db1d676a39a"
+        "identityKmsKeyArn": "arn:aws:kms:us-east-1:740314716244:key/519f7dc5-9a69-4ccf-9c28-26970699fe72",
+        "deployHash": "ea227aa31b049132"
       }
     }
   }

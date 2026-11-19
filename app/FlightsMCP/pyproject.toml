@@ -9,6 +9,7 @@ description = "Servidor MCP de vuelos (simulado dinamico) para TripPlanner AI en
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "aws-opentelemetry-distro",
     "mcp >= 1.28.1, < 2.0.0",
 ]
 

@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 980" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="980" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="640" y="34" text-anchor="middle" font-size="22" font-weight="700" fill="#0f172a">TripPlanner AI — Arquitectura (dos canales independientes)</text>
+
+  <!-- Usuario / Frontend -->
+  <rect x="440" y="60" width="400" height="60" rx="8" fill="#0f172a"/>
+  <text x="640" y="84" text-anchor="middle" font-size="15" fill="#ffffff" font-weight="600">USUARIO (navegador)</text>
+  <text x="640" y="104" text-anchor="middle" font-size="12" fill="#cbd5e1">React 19 + Vite + Tailwind — S3 + CloudFront (OAC)</text>
+
+  <!-- arrows down to channels -->
+  <line x1="560" y1="120" x2="330" y2="170" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="400" y="145" font-size="12" fill="#2563eb" font-weight="600">Canal 1 · HTTPS REST/JSON</text>
+  <line x1="720" y1="120" x2="950" y2="170" stroke="#0d9488" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="880" y="145" font-size="12" fill="#0d9488" font-weight="600">Canal 2 · HTTP Streaming (directo, sin API Gateway)</text>
+
+  <!-- CANAL 1 container -->
+  <rect x="60" y="170" width="520" height="420" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="80" y="196" font-size="14" font-weight="700" fill="#1d4ed8">CANAL 1 · Operaciones de negocio</text>
+
+  <rect x="100" y="215" width="440" height="60" rx="6" fill="#2563eb"/>
+  <text x="320" y="240" text-anchor="middle" font-size="13" fill="#ffffff" font-weight="600">Amazon API Gateway</text>
+  <text x="320" y="258" text-anchor="middle" font-size="11" fill="#dbeafe">Cognito Authorizer · CORS restringido · throttling 100 req/s</text>
+
+  <line x1="320" y1="275" x2="320" y2="300" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="100" y="300" width="440" height="80" rx="6" fill="#1d4ed8"/>
+  <text x="320" y="326" text-anchor="middle" font-size="13" fill="#ffffff" font-weight="600">AWS Lambda — 12 funciones (Python 3.13, arm64)</text>
+  <text x="320" y="345" text-anchor="middle" font-size="11" fill="#dbeafe">Trips · Itinerary · Reservations · Preferences</text>
+  <text x="320" y="362" text-anchor="middle" font-size="11" fill="#dbeafe">user_id = JWT claim "sub" (nunca parámetro libre)</text>
+
+  <line x1="320" y1="380" x2="320" y2="405" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="100" y="405" width="440" height="70" rx="6" fill="#0f172a"/>
+  <text x="320" y="432" text-anchor="middle" font-size="13" fill="#ffffff" font-weight="600">Amazon DynamoDB — TripPlannerTable</text>
+  <text x="320" y="450" text-anchor="middle" font-size="11" fill="#cbd5e1">Single-table · PK=USER#&lt;sub&gt; · GSI1 (reservas por viaje)</text>
+  <text x="320" y="464" text-anchor="middle" font-size="10" fill="#94a3b8">PAY_PER_REQUEST</text>
+
+  <rect x="100" y="495" width="440" height="68" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="320" y="517" text-anchor="middle" font-size="12" font-weight="600" fill="#1d4ed8">Amazon Cognito User Pool</text>
+  <text x="320" y="535" text-anchor="middle" font-size="11" fill="#1e3a8a">Registro / login — JWT compartido con Canal 2</text>
+  <text x="320" y="551" text-anchor="middle" font-size="10" fill="#64748b">SRP, sin secret — usado también como authorizer CUSTOM_JWT de AgentCore</text>
+
+  <!-- connect cognito to both channels -->
+  <line x1="540" y1="529" x2="950" y2="220" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
+
+  <!-- CANAL 2 container -->
+  <rect x="680" y="170" width="540" height="650" rx="10" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="700" y="196" font-size="14" font-weight="700" fill="#0f766e">CANAL 2 · Interacción agéntica</text>
+
+  <rect x="720" y="215" width="460" height="65" rx="6" fill="#0d9488"/>
+  <text x="950" y="238" text-anchor="middle" font-size="13" fill="#ffffff" font-weight="600">Amazon Bedrock AgentCore</text>
+  <text x="950" y="256" text-anchor="middle" font-size="11" fill="#ccfbf1">Runtime HTTP · autorizador CUSTOM_JWT (Cognito)</text>
+  <text x="950" y="271" text-anchor="middle" font-size="10" fill="#99f6e4">OrchestratorAgent (Strands SDK)</text>
+
+  <line x1="950" y1="280" x2="950" y2="303" stroke="#0d9488" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="720" y="303" width="460" height="95" rx="6" fill="#ffffff" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="950" y="325" text-anchor="middle" font-size="12" font-weight="700" fill="#0f766e">OrchestratorAgent — 13 tools</text>
+  <text x="950" y="344" text-anchor="middle" font-size="11" fill="#134e4a">ask_flights / ask_weather → A2A (SigV4)</text>
+  <text x="950" y="361" text-anchor="middle" font-size="11" fill="#134e4a">11 tools → boto3.invoke_lambda (las mismas 12 Lambdas)</text>
+  <text x="950" y="378" text-anchor="middle" font-size="10" fill="#475569">user_id inyectado desde la sesión — el LLM nunca lo ve</text>
+  <text x="950" y="392" text-anchor="middle" font-size="10" fill="#475569">Memoria: TripPlannerMemory (USER_PREFERENCE + SUMMARIZATION + SEMANTIC)</text>
+
+  <!-- arrow back to Lambda box (Canal 1) -->
+  <line x1="720" y1="350" x2="545" y2="340" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="565" y="300" font-size="10" fill="#334155">boto3 (IAM)</text>
+
+  <!-- A2A specialists -->
+  <line x1="880" y1="398" x2="820" y2="425" stroke="#0d9488" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1020" y1="398" x2="1080" y2="425" stroke="#0d9488" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="790" y="415" font-size="10" fill="#0d9488">A2A</text>
+  <text x="1060" y="415" font-size="10" fill="#0d9488">A2A</text>
+
+  <rect x="720" y="425" width="210" height="60" rx="6" fill="#14b8a6"/>
+  <text x="825" y="449" text-anchor="middle" font-size="12" fill="#ffffff" font-weight="600">FlightsAgent</text>
+  <text x="825" y="465" text-anchor="middle" font-size="10" fill="#f0fdfa">especialista en vuelos</text>
+
+  <rect x="970" y="425" width="210" height="60" rx="6" fill="#14b8a6"/>
+  <text x="1075" y="449" text-anchor="middle" font-size="12" fill="#ffffff" font-weight="600">WeatherAgent</text>
+  <text x="1075" y="465" text-anchor="middle" font-size="10" fill="#f0fdfa">especialista en clima</text>
+
+  <line x1="825" y1="485" x2="825" y2="508" stroke="#0d9488" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1075" y1="485" x2="1075" y2="508" stroke="#0d9488" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="835" y="500" font-size="10" fill="#0d9488">MCP</text>
+  <text x="1085" y="500" font-size="10" fill="#0d9488">MCP</text>
+
+  <rect x="720" y="508" width="210" height="55" rx="6" fill="#ffffff" stroke="#14b8a6" stroke-width="1.5"/>
+  <text x="825" y="530" text-anchor="middle" font-size="12" font-weight="600" fill="#0f766e">FlightsMCP</text>
+  <text x="825" y="546" text-anchor="middle" font-size="10" fill="#475569">datos simulados dinámicos</text>
+
+  <rect x="970" y="508" width="210" height="55" rx="6" fill="#ffffff" stroke="#14b8a6" stroke-width="1.5"/>
+  <text x="1075" y="530" text-anchor="middle" font-size="12" font-weight="600" fill="#0f766e">WeatherMCP</text>
+  <text x="1075" y="546" text-anchor="middle" font-size="10" fill="#475569">Open-Meteo (datos reales)</text>
+
+  <!-- Exa MCP -->
+  <line x1="950" y1="398" x2="950" y2="586" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <rect x="845" y="586" width="210" height="48" rx="6" fill="#ffffff" stroke="#64748b" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="950" y="606" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Exa AI MCP (opcional)</text>
+  <text x="950" y="622" text-anchor="middle" font-size="10" fill="#64748b">búsqueda web — solo el Orchestrator</text>
+
+  <!-- Model layer -->
+  <rect x="720" y="650" width="460" height="95" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="950" y="672" text-anchor="middle" font-size="12" font-weight="700" fill="#9a3412">Modelo LLM (los 3 agentes)</text>
+  <text x="950" y="691" text-anchor="middle" font-size="11" fill="#7c2d12">OpenRouter — ~8 modelos gratuitos con tool-calling, en cadena</text>
+  <text x="950" y="708" text-anchor="middle" font-size="11" fill="#7c2d12">Gemini como último recurso si toda la cadena se satura</text>
+  <text x="950" y="726" text-anchor="middle" font-size="10" fill="#9a3412">API keys en AgentCore Identity (ApiKeyCredentialProvider) — nunca en texto plano</text>
+
+  <!-- Memory -->
+  <rect x="720" y="760" width="460" height="48" rx="6" fill="#ffffff" stroke="#0d9488" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="950" y="780" text-anchor="middle" font-size="11" font-weight="600" fill="#0f766e">AgentCore Memory: TripPlannerMemory</text>
+  <text x="950" y="796" text-anchor="middle" font-size="10" fill="#475569">Ayuda a conversar — DynamoDB sigue siendo la fuente de verdad</text>
+
+  <!-- IAM banner -->
+  <rect x="60" y="850" width="1160" height="40" rx="6" fill="#fff1f2" stroke="#e11d48" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="640" y="875" text-anchor="middle" font-size="12" fill="#9f1239" font-weight="600">IAM — roles y políticas de mínimo privilegio (Lambda, AgentCore, API Gateway, S3) · sin credenciales AWS en el navegador</text>
+
+  <!-- Legend -->
+  <g font-size="11" fill="#334155">
+    <rect x="60" y="910" width="14" height="14" fill="#0f172a"/><text x="80" y="922">Usuario / Frontend / Datos</text>
+    <rect x="250" y="910" width="14" height="14" fill="#2563eb"/><text x="270" y="922">Canal 1 · Backend serverless</text>
+    <rect x="460" y="910" width="14" height="14" fill="#0d9488"/><text x="480" y="922">Canal 2 · Capa agéntica</text>
+    <rect x="650" y="910" width="14" height="14" fill="#ea580c"/><text x="670" y="922">Modelo LLM</text>
+    <rect x="780" y="910" width="14" height="14" fill="#ffffff" stroke="#e11d48" stroke-dasharray="3 2"/><text x="800" y="922">Seguridad (IAM)</text>
+    <rect x="930" y="910" width="14" height="14" fill="#ffffff" stroke="#64748b" stroke-dasharray="3 2"/><text x="950" y="922">Componente opcional</text>
+  </g>
+  <text x="640" y="955" text-anchor="middle" font-size="10" fill="#94a3b8">Figura 1 — TripPlanner AI. Generado 2026-11-19.</text>
+</svg>

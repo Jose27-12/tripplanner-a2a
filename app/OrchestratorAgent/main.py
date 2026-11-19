@@ -17,7 +17,7 @@ from strands.agent.conversation_manager.null_conversation_manager import (
     NullConversationManager,
 )
 
-from a2a_auth import build_client_config
+from a2a_auth import build_agent_card, build_client_config
 from lambda_tools.client import invoke_lambda
 from mcp_client.client import get_streamable_http_mcp_client
 from model.load import load_model
@@ -93,6 +93,10 @@ async def _ask_remote(endpoint: str, request: str) -> str:
     config = build_client_config(endpoint, current_user_id())
     try:
         remote = A2AAgent(endpoint=endpoint, client_config=config)
+        if config is not None:
+            # Evita el descubrimiento por HTTP (.well-known/agent-card.json),
+            # que AgentCore no expone y responde 403. Ver a2a_auth.build_agent_card.
+            remote._agent_card = build_agent_card(endpoint)
         result = await remote.invoke_async(request)
         return ui_blocks.forward_blocks_from(str(result.message))
     except Exception:

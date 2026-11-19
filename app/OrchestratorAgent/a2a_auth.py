@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import boto3
 import httpx
 from a2a.client import ClientConfig
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
@@ -71,3 +72,27 @@ def build_client_config(endpoint: str, user_id: str) -> ClientConfig | None:
         timeout=_TIMEOUT,
     )
     return ClientConfig(httpx_client=http_client)
+
+
+def build_agent_card(endpoint: str, name: str = "agent") -> AgentCard:
+    """AgentCard sin red para especialistas en AgentCore.
+
+    AgentCore solo expone una ruta por runtime (POST .../invocations, firmada
+    con SigV4 y autorizada vía bedrock-agentcore:InvokeAgentRuntime); no existe
+    el endpoint bien-conocido .well-known/agent-card.json que el resolver por
+    defecto de a2a-sdk intenta pedir con GET — esa ruta no es una acción IAM
+    válida y responde 403. bedrock_agentcore.runtime.a2a._build_agent_card ya
+    fija esta misma forma de card en el lado del especialista (card.url =
+    la propia URL de invocación), así que la reconstruimos aquí y se la
+    inyectamos al cliente para saltar el descubrimiento por HTTP.
+    """
+    return AgentCard(
+        name=name,
+        description="",
+        url=endpoint,
+        version="0.1.0",
+        capabilities=AgentCapabilities(streaming=True),
+        skills=[AgentSkill(id="main", name=name, description="", tags=["main"])],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+    )

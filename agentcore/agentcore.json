@@ -146,6 +146,10 @@
     {
       "authorizerType": "ApiKeyCredentialProvider",
       "name": "GeminiApiKey"
+    },
+    {
+      "authorizerType": "ApiKeyCredentialProvider",
+      "name": "OpenRouterApiKey"
     }
   ],
   "evaluators": [],

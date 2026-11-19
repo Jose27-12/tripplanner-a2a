@@ -1,15 +1,19 @@
-"""Carga del modelo de lenguaje (Claude por la API de Anthropic, o Gemini).
+"""Carga del modelo de lenguaje (OpenRouter, Claude por la API de Anthropic, o Gemini).
 
 Proveedor configurable con MODEL_PROVIDER:
-  - "anthropic": Claude Sonnet 5.5 vía API de Anthropic (ANTHROPIC_MODEL_ID).
-  - "gemini":    Gemini vía Google AI (GEMINI_MODEL_ID).
+  - "openrouter": modelos gratuitos de OpenRouter, con cadena de respaldo
+    (OPENROUTER_MODEL_ID / OPENROUTER_FALLBACK_MODELS) y Gemini como último
+    recurso si se agota la cadena. Proveedor por defecto.
+  - "anthropic":  Claude Sonnet 5.5 vía API de Anthropic (ANTHROPIC_MODEL_ID).
+  - "gemini":     Gemini vía Google AI (GEMINI_MODEL_ID).
 
 Las API keys NUNCA van en texto plano en agentcore.json:
 - En AWS se guardan en AgentCore Identity como ApiKeyCredentialProvider
-  ("AnthropicApiKey" / "GeminiApiKey", sección credentials de
-  agentcore/agentcore.json) y se leen en tiempo de petición con el Workload
+  ("AnthropicApiKey" / "GeminiApiKey" / "OpenRouterApiKey", sección credentials
+  de agentcore/agentcore.json) y se leen en tiempo de petición con el Workload
   Access Token que AgentCore inyecta en cada invocación.
-- En desarrollo local basta con ANTHROPIC_API_KEY / GEMINI_API_KEY en el entorno.
+- En desarrollo local basta con ANTHROPIC_API_KEY / GEMINI_API_KEY /
+  OPENROUTER_API_KEY en el entorno.
 
 Como el token solo existe durante una invocación, la clave se resuelve de
 forma perezosa justo antes de la primera llamada al modelo y se cachea.
@@ -20,17 +24,37 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROVIDER = "gemini"
+DEFAULT_PROVIDER = "openrouter"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
 # Plan gratuito de Gemini: "gemini-3.7-flash" solo admite 20 peticiones/día y suele
 # estar saturado (503); los modelos "lite" tienen más cuota y responden en ~1-2 s.
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+# OpenRouter: modelo principal + cadena de respaldo, todos gratuitos (":free") y
+# con soporte de tool calling. Cada modelo gratuito tiene cupo diario propio y
+# muy bajo, así que ante saturación se salta al siguiente en vez de esperar.
+DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+DEFAULT_OPENROUTER_FALLBACKS = (
+    "baidu/ernie-5.5-flash-preview:free,"
+    "nvidia/nemotron-3.5-super-vl:free,"
+    "nvidia/nemotron-3.5-lightning:free,"
+    "inclusionai/ling-3.2-flash:free,"
+    "dots-studio/dots-3-note-preview:free,"
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,"
+    "particle-ai/particle-1:free,"
+    "recursive/flint-v1.0:free"
+    # Nota: se excluyen los modelos "google/gemma-*:free" — comparten la
+    # validación estricta de tool-calling de Gemini (exigen "thought_signature"
+    # en los function-call de turnos previos) y OpenRouter no la añade, así
+    # que fallan con 400 INVALID_ARGUMENT en conversaciones multi-turno con
+    # historial de tool calls de otro modelo.
+)
 
 # proveedor -> (variable local, nombre del credential provider en AgentCore Identity)
 # El CDK de AgentCore expone el nombre como CREDENTIAL_<NOMBRE>_NAME.
 _KEYS = {
     "anthropic": ("ANTHROPIC_API_KEY", os.environ.get("CREDENTIAL_ANTHROPICAPIKEY_NAME", "AnthropicApiKey")),
     "gemini": ("GEMINI_API_KEY", os.environ.get("CREDENTIAL_GEMINIAPIKEY_NAME", "GeminiApiKey")),
+    "openrouter": ("OPENROUTER_API_KEY", os.environ.get("CREDENTIAL_OPENROUTERAPIKEY_NAME", "OpenRouterApiKey")),
 }
 
 _cache: dict[str, str] = {}
@@ -104,7 +128,11 @@ def _anthropic_model():
 # Si el modelo principal está saturado (503 UNAVAILABLE "high demand") o sin
 # cuota (429), se pasa al siguiente de la lista sin esperar los reintentos.
 DEFAULT_GEMINI_FALLBACKS = "gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-3.7-flash"
-_OVERLOAD_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "high demand", "overloaded")
+_OVERLOAD_MARKERS = (
+    "503", "502", "504", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+    "high demand", "overloaded", "rate limit", "rate-limited",
+    "temporarily", "no instances available", "no endpoints found",
+)
 _COOLDOWN_SECONDS = 300
 _overloaded_until: dict[str, float] = {}
 
@@ -168,10 +196,66 @@ def _gemini_model():
     return _GeminiModelWithFallback(client_args={}, model_id=primary)
 
 
+def _openrouter_model():
+    import time
+
+    from strands.models.openai import OpenAIModel
+
+    primary = os.environ.get("OPENROUTER_MODEL_ID", DEFAULT_OPENROUTER_MODEL)
+    fallbacks = [m.strip() for m in os.environ.get("OPENROUTER_FALLBACK_MODELS", DEFAULT_OPENROUTER_FALLBACKS).split(",") if m.strip()]
+    chain = [primary, *[m for m in fallbacks if m != primary]]
+
+    class _OpenRouterModelWithFallback(OpenAIModel):
+        """OpenAIModel apuntando a OpenRouter (API compatible con OpenAI), con
+        API key desde AgentCore Identity y cadena de modelos gratuitos de
+        respaldo (cada uno con cupo diario propio y bajo)."""
+
+        def _resolve_client_args(self):
+            self.client_args["api_key"] = get_api_key("openrouter")
+            self.client_args["base_url"] = "https://openrouter.ai/api/v1"
+            return super()._resolve_client_args()
+
+        async def stream(self, *args, **kwargs):
+            now = time.monotonic()
+            candidates = [m for m in chain if _overloaded_until.get(m, 0) <= now] or chain[-1:]
+            last_error: BaseException | None = None
+            for model_id in candidates:
+                self.config["model_id"] = model_id
+                started = False
+                held: list = []  # Strands emite messageStart antes de llamar al modelo
+                try:
+                    async for event in super().stream(*args, **kwargs):
+                        if not started and isinstance(event, dict) and set(event) <= {"messageStart"}:
+                            held.append(event)
+                            continue
+                        if not started:
+                            started = True
+                            for pending in held:
+                                yield pending
+                        yield event
+                    for pending in held if not started else []:
+                        yield pending
+                    return
+                except Exception as error:  # noqa: BLE001 - se re-lanza si no es saturación
+                    if started or not _is_overload(error):
+                        raise
+                    _overloaded_until[model_id] = time.monotonic() + _COOLDOWN_SECONDS
+                    logger.warning("OpenRouter %s saturado/no disponible (%s); probando el siguiente modelo", model_id, error)
+                    last_error = error
+            # Se agotó toda la cadena gratuita de OpenRouter: Gemini como último recurso.
+            logger.warning("Cadena de OpenRouter agotada (%s); usando Gemini como último recurso", last_error)
+            async for event in _gemini_model().stream(*args, **kwargs):
+                yield event
+
+    return _OpenRouterModelWithFallback(client_args={}, model_id=primary)
+
+
 def load_model():
     provider = os.environ.get("MODEL_PROVIDER", DEFAULT_PROVIDER).lower()
     if provider == "anthropic":
         return _anthropic_model()
     if provider == "gemini":
         return _gemini_model()
+    if provider == "openrouter":
+        return _openrouter_model()
     raise ValueError(f"MODEL_PROVIDER no soportado: {provider}")

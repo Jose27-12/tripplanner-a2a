@@ -1,59 +1,62 @@
 import json
+
+from bedrock_agentcore.runtime import serve_a2a
 from strands import Agent, tool
 from strands.multiagent.a2a.executor import StrandsA2AExecutor
-from bedrock_agentcore.runtime import serve_a2a
+
+from mcp_connection import McpRuntimeConnection
 from model.load import load_model
+
+# Servidor MCP de clima (runtime WeatherMCP en AgentCore, datos de Open-Meteo)
+weather_mcp = McpRuntimeConnection("WeatherMCP", "WEATHER_MCP_URL")
 
 
 @tool
-def get_forecast(city: str, date: str) -> str:
-    """Devuelve el pronóstico del clima para una ciudad en una fecha dada.
+def get_forecast(city: str, start_date: str, end_date: str = "", country_code: str = "CO") -> str:
+    """Pronóstico del clima por día para una ciudad y un rango de fechas, consultando el MCP de clima.
 
     Args:
         city: Nombre de la ciudad (ej. 'Cartagena').
-        date: Fecha en formato YYYY-MM-DD. Para obtener un rango, llama
-              la herramienta varias veces con fechas consecutivas.
+        start_date: Fecha inicial YYYY-MM-DD.
+        end_date: Fecha final YYYY-MM-DD (opcional; por defecto igual a start_date).
+        country_code: Código ISO del país para desambiguar la ciudad (por defecto 'CO').
 
     Returns:
-        Bloque <ui type="weather"> con el pronóstico del día.
+        Bloque <ui type="weather"> con un objeto por día, o un mensaje de error.
     """
-    # Datos simulados — en producción se conectaría a una API meteorológica real
-    # Simulamos variación por día para hacer el demo más realista
-    day_num = int(date[-2:]) if date else 10
-    temp_max = 30 + (day_num % 4)
-    temp_min = 24 + (day_num % 3)
-    rain_prob = (day_num * 7) % 60
-    conditions = ["Soleado", "Parcialmente nublado", "Soleado", "Nublado con lluvias"]
-    icons      = ["sunny",   "partly_cloudy",        "sunny",   "rainy"]
-    idx = day_num % 4
-
-    forecast = [{
-        "fecha": date,
-        "ciudad": city,
-        "temp_max_c": temp_max,
-        "temp_min_c": temp_min,
-        "condicion": conditions[idx],
-        "lluvia_prob_pct": rain_prob,
-        "humedad_pct": 70 + (day_num % 15),
-        "icono": icons[idx],
-    }]
-    return f'<ui type="weather">{json.dumps(forecast, ensure_ascii=False)}</ui>'
+    data = weather_mcp.call_tool("get_forecast", {
+        "city": city,
+        "start_date": start_date,
+        "end_date": end_date or start_date,
+        "country_code": country_code,
+    })
+    if "error" in data:
+        return f"No fue posible consultar el clima: {data['error']}"
+    days = data.get("dias") or []
+    if not days:
+        return "No hay datos del clima para esas fechas."
+    historic = any(d.get("tipo") == "estimado_historico" for d in days)
+    note = (
+        "Nota: algunas fechas superan los 16 días de pronóstico y se estiman con "
+        "datos históricos de años anteriores.\n" if historic else ""
+    )
+    return f'{note}<ui type="weather">{json.dumps(days, ensure_ascii=False)}</ui>'
 
 
 tools = [get_forecast]
 
 SYSTEM_PROMPT = """
-Eres un agente especializado en pronósticos del clima.
+Eres un agente especializado en pronósticos del clima. Tus datos vienen de un
+servicio meteorológico real (Open-Meteo) expuesto por MCP (herramienta get_forecast).
 
-Cuando el usuario solicite el clima para una ciudad y un rango de fechas,
-llama a get_forecast una vez por cada día del rango y consolida los
-resultados en un único bloque <ui type="weather">[...]</ui>.
-
-Tu respuesta SIEMPRE debe incluir ese bloque sin modificarlo. Antes del bloque,
-escribe un resumen breve: temperatura promedio esperada, condición predominante
-y si se recomienda llevar paraguas.
-
-Nunca inventes datos que no vengan de get_forecast.
+- Llama a get_forecast UNA vez con la ciudad y el rango completo de fechas.
+- Tu respuesta SIEMPRE debe incluir, sin modificarlo, el bloque
+  <ui type="weather">[...]</ui> que devuelve la herramienta.
+- Antes del bloque escribe un resumen breve: rango de temperaturas, condición
+  predominante, días con mayor probabilidad de lluvia y si conviene llevar
+  paraguas o ropa ligera.
+- Si la herramienta indica que hay días estimados con datos históricos, dilo.
+- Nunca inventes datos que no vengan de get_forecast.
 """
 
 agent = Agent(

@@ -1,78 +1,59 @@
 import json
+
+from bedrock_agentcore.runtime import serve_a2a
 from strands import Agent, tool
 from strands.multiagent.a2a.executor import StrandsA2AExecutor
-from bedrock_agentcore.runtime import serve_a2a
+
+from mcp_connection import McpRuntimeConnection
 from model.load import load_model
+
+# Servidor MCP de vuelos (runtime FlightsMCP en AgentCore)
+flights_mcp = McpRuntimeConnection("FlightsMCP", "FLIGHTS_MCP_URL")
 
 
 @tool
-def search_flights(origin: str, destination: str, date: str) -> str:
-    """Busca vuelos entre dos ciudades para una fecha dada.
+def search_flights(origin: str, destination: str, date: str, passengers: int = 1) -> str:
+    """Busca vuelos de ida entre dos ciudades para una fecha, consultando el MCP de vuelos.
 
     Args:
         origin: Ciudad o código IATA de origen (ej. 'Bogotá' o 'BOG').
         destination: Ciudad o código IATA de destino (ej. 'Cartagena' o 'CTG').
         date: Fecha del vuelo en formato YYYY-MM-DD.
+        passengers: Número de pasajeros (1-9).
 
     Returns:
-        Bloque <ui type="flights"> con la lista de vuelos disponibles.
+        Bloque <ui type="flights"> con los vuelos disponibles, o un mensaje de error.
     """
-    # Datos simulados — en producción se conectaría a una API de vuelos real
-    flights = [
-        {
-            "aerolinea": "Avianca",
-            "vuelo": "AV9821",
-            "origen": origin,
-            "destino": destination,
-            "fecha": date,
-            "salida": "07:15",
-            "llegada": "08:30",
-            "duracion_min": 75,
-            "precio_usd": 89,
-            "clase": "ECONOMICA",
-        },
-        {
-            "aerolinea": "LATAM",
-            "vuelo": "LA4410",
-            "origen": origin,
-            "destino": destination,
-            "fecha": date,
-            "salida": "12:40",
-            "llegada": "13:55",
-            "duracion_min": 75,
-            "precio_usd": 76,
-            "clase": "ECONOMICA",
-        },
-        {
-            "aerolinea": "Avianca",
-            "vuelo": "AV9835",
-            "origen": origin,
-            "destino": destination,
-            "fecha": date,
-            "salida": "18:05",
-            "llegada": "19:20",
-            "duracion_min": 75,
-            "precio_usd": 102,
-            "clase": "ECONOMICA",
-        },
-    ]
-    return f'<ui type="flights">{json.dumps(flights, ensure_ascii=False)}</ui>'
+    data = flights_mcp.call_tool("search_flights", {
+        "origin": origin,
+        "destination": destination,
+        "date": date,
+        "passengers": int(passengers),
+    })
+    if "error" in data:
+        extra = data.get("ciudades_disponibles")
+        hint = f" Ciudades disponibles: {', '.join(extra)}." if extra else ""
+        return f"No fue posible buscar vuelos: {data['error']}.{hint}"
+    if not data.get("vuelos"):
+        return "No hay vuelos disponibles para esa ruta y fecha."
+    return f'<ui type="flights">{json.dumps(data["vuelos"], ensure_ascii=False)}</ui>'
 
 
 tools = [search_flights]
 
 SYSTEM_PROMPT = """
-Eres un agente especializado en búsqueda de vuelos.
+Eres un agente especializado en búsqueda de vuelos. Tus datos vienen de un
+proveedor de vuelos expuesto por MCP (herramienta search_flights).
 
-Cuando el usuario solicite vuelos, usa la herramienta search_flights y
-presenta los resultados. Tu respuesta SIEMPRE debe incluir el bloque
-<ui type="flights">[...]</ui> que devuelve la herramienta, sin modificarlo.
-
-Antes del bloque, escribe una breve descripción de las opciones encontradas
-(aerolineas, rango de precios, horarios disponibles). Resalta la opción
-más económica.
-
-Nunca inventes vuelos que no vengan de search_flights.
+- Usa search_flights para cada tramo. Si piden ida y vuelta, llama una vez
+  para la ida y otra para el regreso (origen y destino invertidos).
+- Pasa siempre el número de pasajeros si el usuario lo indica.
+- Tu respuesta SIEMPRE debe incluir, sin modificarlo, cada bloque
+  <ui type="flights">[...]</ui> que devuelve la herramienta.
+- Antes de los bloques escribe un resumen breve: aerolíneas, rango de
+  precios por persona y total en COP, horarios y la opción más económica.
+- Aclara que las tarifas provienen de un proveedor simulado.
+- Nunca inventes vuelos que no vengan de search_flights.
 """
 
 agent = Agent(

@@ -21,6 +21,9 @@
           "name": "AGENTCORE_RUNTIME_URL",
           "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_FlightsAgent-YouKp45zfD/invocations/"
         }
+      ],
+      "additionalPolicies": [
+        "iam-policy.json"
       ]
     },
     {
@@ -36,6 +39,9 @@
           "name": "AGENTCORE_RUNTIME_URL",
           "value": "https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A740314716244%3Aruntime%2FTripPlannerA2A_WeatherAgent-5pFZx8Ek8T/invocations/"
         }
+      ],
+      "additionalPolicies": [
+        "iam-policy.json"
       ]
     },
     {
@@ -83,6 +89,24 @@
           ]
         }
       }
+    },
+    {
+      "name": "FlightsMCP",
+      "build": "CodeZip",
+      "entrypoint": "main.py",
+      "codeLocation": "app/FlightsMCP/",
+      "runtimeVersion": "PYTHON_3_14",
+      "networkMode": "PUBLIC",
+      "protocol": "MCP"
+    },
+    {
+      "name": "WeatherMCP",
+      "build": "CodeZip",
+      "entrypoint": "main.py",
+      "codeLocation": "app/WeatherMCP/",
+      "runtimeVersion": "PYTHON_3_14",
+      "networkMode": "PUBLIC",
+      "protocol": "MCP"
     }
   ],
   "memories": [

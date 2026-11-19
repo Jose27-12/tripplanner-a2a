@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "WeatherMCP"
+version = "0.1.0"
+description = "Servidor MCP de clima (Open-Meteo) para TripPlanner AI en AgentCore Runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp >= 1.28.1, < 2.0.0",
+    "httpx >= 0.27.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeWeatherMCPRuntime",
+      "Effect": "Allow",
+      "Action": "bedrock-agentcore:InvokeAgentRuntime",
+      "Resource": [
+        "arn:aws:bedrock-agentcore:us-east-1:740314716244:runtime/TripPlannerA2A_WeatherMCP-*"
+      ]
+    },
+    {
+      "Sid": "DiscoverMcpRuntimeByName",
+      "Effect": "Allow",
+      "Action": "bedrock-agentcore:ListAgentRuntimes",
+      "Resource": "*"
+    }
+  ]
+}

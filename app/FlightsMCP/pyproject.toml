@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "FlightsMCP"
+version = "0.1.0"
+description = "Servidor MCP de vuelos (simulado dinamico) para TripPlanner AI en AgentCore Runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp >= 1.28.1, < 2.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

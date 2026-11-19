@@ -1,6 +1,7 @@
 """Respuestas HTTP estándar para todas las Lambdas."""
 import json
 import os
+from decimal import Decimal
 
 _ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*")
 
@@ -12,11 +13,18 @@ _CORS_HEADERS = {
 }
 
 
+def _json_default(value):
+    """DynamoDB devuelve los números como Decimal: se serializan como número JSON."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    return str(value)
+
+
 def _build(status: int, body: dict) -> dict:
     return {
         "statusCode": status,
         "headers": _CORS_HEADERS,
-        "body": json.dumps(body, default=str, ensure_ascii=False),
+        "body": json.dumps(body, default=_json_default, ensure_ascii=False),
     }
 
 

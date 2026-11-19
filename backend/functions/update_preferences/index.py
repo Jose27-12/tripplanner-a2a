@@ -1,9 +1,9 @@
 """PUT /preferences — Crea o reemplaza las preferencias del usuario."""
-import json
 import logging
 from datetime import datetime, timezone
 
 from common.auth import get_user_id
+from common.validation import parse_json_body, find_payment_data
 from common.db import table, pk, sk_prefs
 from common.response import ok, bad_request, server_error
 from common.validation import PPTO_TIPOS
@@ -20,7 +20,12 @@ _ALLOWED_KEYS = {
 def handler(event, context):
     try:
         user_id = get_user_id(event)
-        body = json.loads(event.get("body") or "{}")
+        body, err = parse_json_body(event)
+        if err:
+            return bad_request(err)
+
+        if find_payment_data(body, "preferencias"):
+            return bad_request("No se permiten datos de pago en las preferencias")
 
         ppto = body.get("presupuesto_tipo")
         if ppto and ppto not in PPTO_TIPOS:

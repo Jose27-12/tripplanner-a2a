@@ -1,9 +1,9 @@
 """PUT /trips/{id}/itinerary — Actualiza el itinerario de un viaje."""
-import json
 import logging
 from datetime import datetime, timezone
 
 from common.auth import get_user_id
+from common.validation import parse_json_body
 from common.db import table, get_item, pk, sk_itin
 from common.response import ok, bad_request, not_found, server_error
 from common.validation import validate_itinerary
@@ -16,7 +16,9 @@ def handler(event, context):
     try:
         user_id = get_user_id(event)
         trip_id = event["pathParameters"]["id"]
-        body = json.loads(event.get("body") or "{}")
+        body, err = parse_json_body(event)
+        if err:
+            return bad_request(err)
 
         existing = get_item(user_id, sk_itin(trip_id))
         if not existing:

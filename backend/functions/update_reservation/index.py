@@ -1,9 +1,9 @@
 """PUT /reservations/{id} — Actualiza una reserva (estado, detalle)."""
-import json
 import logging
 from datetime import datetime, timezone
 
 from common.auth import get_user_id
+from common.validation import parse_json_body
 from common.db import table, get_item, pk, sk_res
 from common.response import ok, bad_request, not_found, server_error
 from common.validation import validate_reservation_update, RES_ESTADOS
@@ -23,7 +23,9 @@ def handler(event, context):
     try:
         user_id = get_user_id(event)
         res_id = event["pathParameters"]["id"]
-        body = json.loads(event.get("body") or "{}")
+        body, err = parse_json_body(event)
+        if err:
+            return bad_request(err)
 
         existing = get_item(user_id, sk_res(res_id))
         if not existing:

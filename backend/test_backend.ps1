@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # test_backend.ps1 — Pruebas del backend TripPlanner
 # Sesión 4: flujo completo + pruebas negativas
 # Uso: .\test_backend.ps1
@@ -18,7 +18,8 @@ $TEST_PASS  = "Test1234!"   # cumple: 8 chars, upper, lower, número
 
 # ── Helpers ──────────────────────────────────────────────────
 function OK   { param($msg) Write-Host "  [OK] $msg" -ForegroundColor Green }
-function FAIL { param($msg) Write-Host "  [FAIL] $msg" -ForegroundColor Red }
+$script:FAILS = 0
+function FAIL { param($msg) $script:FAILS++; Write-Host "  [FAIL] $msg" -ForegroundColor Red }
 function INFO { param($msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function SHOW { param($label,$val) Write-Host "      $label`: $val" -ForegroundColor Gray }
 
@@ -43,6 +44,31 @@ function Invoke-Api {
         } catch { $errBody = @{error = $_.Exception.Message} }
         return @{ ok = $false; status = $status; data = $errBody }
     }
+}
+
+function Invoke-Raw {
+    param($Method, $Path, $Token = $null, $RawBody = $null, $ExtraHeaders = @{})
+    $headers = @{} + $ExtraHeaders
+    if ($Token) { $headers["Authorization"] = "Bearer $Token" }
+    try {
+        $p = @{ Method = $Method; Uri = "$API$Path"; Headers = $headers; UseBasicParsing = $true; ErrorAction = "Stop" }
+        if ($RawBody) { $p["Body"] = $RawBody; $p["ContentType"] = "application/json" }
+        $resp = Invoke-WebRequest @p
+        return @{ status = [int]$resp.StatusCode; headers = $resp.Headers }
+    } catch {
+        $r = $_.Exception.Response
+        return @{ status = [int]$r.StatusCode; headers = $r.Headers }
+    }
+}
+
+function New-TestUser {
+    param($Email)
+    $su = aws cognito-idp sign-up --client-id $CLIENT_ID --username $Email --password $TEST_PASS --region $REGION 2>$null | ConvertFrom-Json
+    aws cognito-idp admin-confirm-sign-up --user-pool-id $POOL_ID --username $Email --region $REGION 2>$null | Out-Null
+    $a = aws cognito-idp admin-initiate-auth --user-pool-id $POOL_ID --client-id $CLIENT_ID `
+        --auth-flow ADMIN_USER_PASSWORD_AUTH --auth-parameters "USERNAME=$Email,PASSWORD=$TEST_PASS" `
+        --region $REGION 2>$null | ConvertFrom-Json
+    return @{ sub = $su.UserSub; token = $a.AuthenticationResult.IdToken }
 }
 
 # ════════════════════════════════════════════════════════════
@@ -103,6 +129,16 @@ $r = Invoke-Api -Method GET -Path "/trips"
 if ($r.status -eq 401) { OK "GET /trips sin token → 401" }
 else { FAIL "Se esperaba 401, llegó $($r.status)" }
 
+# CORS: el preflight OPTIONS no lleva token y debe responder 2xx con cabeceras CORS
+$r = Invoke-Raw -Method OPTIONS -Path "/trips" -ExtraHeaders @{ "Origin" = "https://example.com"; "Access-Control-Request-Method" = "GET"; "Access-Control-Request-Headers" = "authorization,content-type" }
+if ($r.status -ge 200 -and $r.status -lt 300 -and $r.headers["Access-Control-Allow-Origin"]) { OK "Preflight OPTIONS sin token -> $($r.status) con CORS" }
+else { FAIL "Preflight OPTIONS -> $($r.status) (CORS: $($r.headers['Access-Control-Allow-Origin']))" }
+
+# CORS: el 401 que genera API Gateway debe traer Access-Control-Allow-Origin
+$r = Invoke-Raw -Method GET -Path "/trips"
+if ($r.status -eq 401 -and $r.headers["Access-Control-Allow-Origin"]) { OK "401 incluye cabecera CORS" }
+else { FAIL "401 sin cabecera CORS (status $($r.status))" }
+
 # ════════════════════════════════════════════════════════════
 # PASO 4 — Crear viaje
 # ════════════════════════════════════════════════════════════
@@ -148,6 +184,23 @@ $r = Invoke-Api -Method POST -Path "/trips" -Token $TOKEN -Body @{
 if ($r.status -eq 400) { OK "Viajeros=0 → 400" }
 else { FAIL "Se esperaba 400, llegó $($r.status)" }
 
+# ── Presupuesto con decimales (antes provocaba 500 en DynamoDB) ──
+$r = Invoke-Api -Method POST -Path "/trips" -Token $TOKEN -Body @{
+    origen       = "Bogota"
+    destino      = "Santa Marta"
+    fecha_inicio = "2027-01-10"
+    fecha_fin    = "2027-01-12"
+    viajeros     = 2
+    presupuesto  = 1500000.50
+}
+if ($r.ok -and $r.data.presupuesto -eq 1500000.5) { OK "Presupuesto decimal -> 201 (presupuesto=$($r.data.presupuesto))" }
+else { FAIL "Presupuesto decimal: status $($r.status) $($r.data.error)" }
+
+# ── JSON inválido → 400 (antes 500) ──
+$r = Invoke-Raw -Method POST -Path "/trips" -Token $TOKEN -RawBody "{esto no es json"
+if ($r.status -eq 400) { OK "JSON invalido -> 400" }
+else { FAIL "JSON invalido: se esperaba 400, llego $($r.status)" }
+
 # ════════════════════════════════════════════════════════════
 # PASO 5 — Listar viajes
 # ════════════════════════════════════════════════════════════
@@ -159,6 +212,11 @@ if ($r.ok -and $r.data.trips.Count -ge 1) {
 } else {
     FAIL "Error al listar viajes: $($r.data)"
 }
+
+# ── Actualizar viaje (antes fallaba: DynamoDB devuelve viajeros como Decimal) ──
+$r = Invoke-Api -Method PUT -Path "/trips/$TRIP_ID" -Token $TOKEN -Body @{ presupuesto = 5200000 }
+if ($r.ok -and $r.data.presupuesto -eq 5200000 -and $r.data.viajeros -eq 3) { OK "PUT /trips/{id} -> presupuesto actualizado, viajeros sigue en 3" }
+else { FAIL "PUT /trips/{id}: status $($r.status) $($r.data.error)" }
 
 # ════════════════════════════════════════════════════════════
 # PASO 6 — Crear itinerario
@@ -209,6 +267,19 @@ $r = Invoke-Api -Method POST -Path "/reservations" -Token $TOKEN -Body @{
 }
 if ($r.status -eq 400) { OK "Campo de pago en detalle → 400" }
 else { FAIL "Se esperaba 400 por campo de pago, llegó $($r.status)" }
+
+# ── Dato de pago anidado o como valor → 400 ──
+$r = Invoke-Api -Method POST -Path "/reservations" -Token $TOKEN -Body @{
+    tripId = $TRIP_ID; tipo = "HOTEL"; detalle = @{ hotel = "Casa Pestagua"; pago = @{ cardNumber = "x" } }
+}
+if ($r.status -eq 400) { OK "Campo de pago anidado -> 400" }
+else { FAIL "Campo de pago anidado: se esperaba 400, llego $($r.status)" }
+
+$r = Invoke-Api -Method POST -Path "/reservations" -Token $TOKEN -Body @{
+    tripId = $TRIP_ID; tipo = "ACTIVIDAD"; detalle = @{ nota = "pagar con 4111 1111 1111 1111" }
+}
+if ($r.status -eq 400) { OK "Numero de tarjeta en un valor -> 400" }
+else { FAIL "Numero de tarjeta en valor: se esperaba 400, llego $($r.status)" }
 
 # ── Validación negativa: tipo inválido ───────────────────────
 $r = Invoke-Api -Method POST -Path "/reservations" -Token $TOKEN -Body @{
@@ -285,11 +356,29 @@ $r = Invoke-Api -Method GET -Path "/trips/FAKEID999" -Token $TOKEN
 if ($r.status -eq 404) { OK "Viaje inexistente → 404 (no expone datos de otros usuarios)" }
 else { FAIL "Se esperaba 404, llegó $($r.status)" }
 
+# Usuario B intenta leer y modificar los datos del usuario A
+$userB = New-TestUser -Email "test-b-$(Get-Random)@tripplanner.dev"
+if (-not $userB.token) { FAIL "No se pudo crear el usuario B" }
+else {
+    $r = Invoke-Api -Method GET -Path "/trips/$TRIP_ID" -Token $userB.token
+    if ($r.status -eq 404) { OK "Usuario B no ve el viaje de A -> 404" } else { FAIL "Usuario B GET viaje de A -> $($r.status)" }
+
+    $r = Invoke-Api -Method PUT -Path "/trips/$TRIP_ID" -Token $userB.token -Body @{ viajeros = 9 }
+    if ($r.status -eq 404) { OK "Usuario B no modifica el viaje de A -> 404" } else { FAIL "Usuario B PUT viaje de A -> $($r.status)" }
+
+    $r = Invoke-Api -Method GET -Path "/reservations?tripId=$TRIP_ID" -Token $userB.token
+    if ($r.ok -and $r.data.reservations.Count -eq 0) { OK "Usuario B no ve reservas de A" } else { FAIL "Usuario B ve reservas de A" }
+
+    $r = Invoke-Api -Method PUT -Path "/reservations/$RES_ID" -Token $userB.token -Body @{ estado = "CONFIRMADA" }
+    if ($r.status -eq 404) { OK "Usuario B no modifica la reserva de A -> 404" } else { FAIL "Usuario B PUT reserva de A -> $($r.status)" }
+}
+
 # ════════════════════════════════════════════════════════════
 # RESUMEN
 # ════════════════════════════════════════════════════════════
 Write-Host "`n══════════════════════════════════════════" -ForegroundColor Yellow
-Write-Host "  PRUEBAS COMPLETADAS" -ForegroundColor Yellow
+if ($script:FAILS -eq 0) { Write-Host "  PRUEBAS COMPLETADAS: 0 fallos" -ForegroundColor Green }
+else { Write-Host "  PRUEBAS COMPLETADAS: $($script:FAILS) fallo(s)" -ForegroundColor Red }
 Write-Host "  Usuario de prueba: $TEST_EMAIL" -ForegroundColor Yellow
 Write-Host "  tripId: $TRIP_ID" -ForegroundColor Yellow
 Write-Host "  resId:  $RES_ID" -ForegroundColor Yellow
@@ -297,3 +386,5 @@ Write-Host "══════════════════════�
 Write-Host ""
 Write-Host "  Verifica en DynamoDB:" -ForegroundColor White
 Write-Host "  aws dynamodb scan --table-name TripPlannerTable-prod --region us-east-1 --output json | ConvertFrom-Json | Select -Expand Items" -ForegroundColor Gray
+
+exit $script:FAILS

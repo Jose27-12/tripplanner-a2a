@@ -24,7 +24,7 @@ Parameters:
 # ─────────────────────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.10
+    Runtime: python3.13
     Handler: index.handler
     Timeout: 15
     MemorySize: 256
@@ -131,11 +131,30 @@ Resources:
         AllowOrigin: !Sub "'${FrontendOrigin}'"
       Auth:
         DefaultAuthorizer: CognitoAuth
+        # El preflight OPTIONS del navegador nunca lleva token: no debe pasar
+        # por el authorizer o el navegador bloquea todas las peticiones (CORS).
+        AddDefaultAuthorizerToCorsPreflight: false
         Authorizers:
           CognitoAuth:
             UserPoolArn: !GetAtt TripPlannerUserPool.Arn
             Identity:
               Header: Authorization
+      # Las respuestas que genera API Gateway (401 del authorizer, 403, 429 de
+      # throttling, 5xx) también necesitan cabeceras CORS para que el frontend
+      # pueda leer el código de estado y redirigir al login.
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${FrontendOrigin}'"
+              Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${FrontendOrigin}'"
+              Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
       TracingEnabled: true
       MethodSettings:
         - ResourcePath: "/*"

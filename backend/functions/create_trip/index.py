@@ -1,11 +1,11 @@
 """POST /trips — Crea un nuevo viaje."""
-import json
 import logging
 from datetime import datetime, timezone
 
 from ulid import ULID
 
 from common.auth import get_user_id
+from common.validation import parse_json_body
 from common.db import table, pk, sk_trip
 from common.response import created, bad_request, server_error
 from common.validation import validate_trip
@@ -17,7 +17,9 @@ logger.setLevel(logging.INFO)
 def handler(event, context):
     try:
         user_id = get_user_id(event)
-        body = json.loads(event.get("body") or "{}")
+        body, err = parse_json_body(event)
+        if err:
+            return bad_request(err)
 
         err = validate_trip(body)
         if err:
